@@ -1,23 +1,104 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
-  Search, Plus, Filter, MoreHorizontal, Clock, CheckCircle2, Users, Calendar, X, Briefcase, DollarSign, AlignLeft
+  Search, Plus, Filter, MoreHorizontal, Clock, CheckCircle2, Users, Calendar, X, Briefcase, DollarSign, AlignLeft, Loader2
 } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 
 export default function AdminProjects() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   
-  const [projects] = useState([
-    { id: "P01", title: "ระบบจองคิวออนไลน์", client: "คุณสมชาย", status: "in_progress", progress: 60, due: "20 ก.ย. 2026", budget: "50,000", tags: ["Web App", "Next.js"] },
-    { id: "P02", title: "แอปพลิเคชัน N-SIGHT", client: "คุณนัท", status: "pending", progress: 0, due: "รอนัดปรึกษา", budget: "รอประเมิน", tags: ["Mobile App"] },
-    { id: "P06", title: "ออกแบบเว็บไซต์บริษัท", client: "บจก. อนาคตไกล", status: "pending", progress: 0, due: "รอประเมิน", budget: "รอประเมิน", tags: ["Web Design"] },
-    { id: "P03", title: "Math Tutor Platform", client: "Tutor Center", status: "uat", progress: 85, due: "18 ก.ย. 2026", budget: "85,000", tags: ["Web App", "UI/UX"] },
-    { id: "P04", title: "ออกแบบโลโก้ร้านกาแฟ", client: "Cafe Amazon", status: "completed", progress: 100, due: "10 ก.ย. 2026", budget: "15,000", tags: ["Branding"] },
-    { id: "P05", title: "เว็บไซต์ E-Commerce", client: "Fashion Shop", status: "in_progress", progress: 30, due: "5 ต.ค. 2026", budget: "120,000", tags: ["E-Commerce"] },
-  ]);
+  // ================= States สำหรับข้อมูล Database =================
+  const [projects, setProjects] = useState<any[]>([]);
+  const [clientList, setClientList] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isCreating, setIsCreating] = useState(false);
+
+  // ================= State ฟอร์มสร้างโปรเจกต์ =================
+  const [newProject, setNewProject] = useState({
+    title: "",
+    client_id: "",
+    type: "Web Application",
+    budget: "",
+    due_date: "",
+    description: "",
+    status: "pending",
+    progress: 0
+  });
+
+  // ================= ดึงข้อมูลจาก Database =================
+  const fetchClients = async () => {
+    try {
+      const { data, error } = await supabase.from('profiles').select('id, full_name, company_name');
+      if (data && !error) setClientList(data);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const fetchProjects = async () => {
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('projects')
+        .select(`
+          *,
+          profiles:client_id (full_name, company_name)
+        `)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      if (data) setProjects(data);
+    } catch (error) {
+      console.error("Error fetching projects:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchClients();
+    fetchProjects();
+  }, []);
+
+  // Helper สำหรับแปลงชื่อลูกค้า
+  const getClientName = (proj: any) => {
+    if (!proj.profiles) return "คุณลูกค้า";
+    return proj.profiles.company_name ? `${proj.profiles.company_name} (คุณ${proj.profiles.full_name})` : `คุณ${proj.profiles.full_name}`;
+  };
+
+  // ================= ฟังก์ชันสร้างโปรเจกต์ =================
+  const handleCreateProject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsCreating(true);
+    try {
+      const { error } = await supabase
+        .from('projects')
+        .insert([{
+          title: newProject.title,
+          client_id: newProject.client_id,
+          type: newProject.type,
+          budget: newProject.budget ? Number(newProject.budget) : 0,
+          description: newProject.description,
+          status: newProject.status,
+          progress: newProject.progress
+        }]);
+
+      if (error) throw error;
+      
+      setIsAddModalOpen(false);
+      setNewProject({ title: "", client_id: "", type: "Web Application", budget: "", due_date: "", description: "", status: "pending", progress: 0 });
+      fetchProjects(); // โหลดข้อมูลใหม่ให้ขึ้นบนบอร์ดทันที
+
+    } catch (error: any) {
+      alert("สร้างโปรเจกต์ไม่สำเร็จ: " + error.message);
+    } finally {
+      setIsCreating(false);
+    }
+  };
 
   return (
     <div className="flex-1 p-4 md:p-8 md:px-10 w-full max-w-[1600px] mx-auto space-y-6 h-screen overflow-hidden flex flex-col">
@@ -47,18 +128,24 @@ export default function AdminProjects() {
 
       {/* Kanban Board */}
       <div className="flex-1 overflow-x-auto overflow-y-hidden pb-4 flex gap-4 md:gap-6 snap-x">
-        <KanbanColumn title="รอประเมิน (New)" count={projects.filter(p => p.status === "pending").length} color="border-zinc-300 bg-zinc-50/50">
-          {projects.filter(p => p.status === "pending").map(p => <ProjectCard key={p.id} project={p} />)}
-        </KanbanColumn>
-        <KanbanColumn title="กำลังพัฒนา (In Progress)" count={projects.filter(p => p.status === "in_progress").length} color="border-black">
-          {projects.filter(p => p.status === "in_progress").map(p => <ProjectCard key={p.id} project={p} />)}
-        </KanbanColumn>
-        <KanbanColumn title="รอตรวจ / แก้ไข (UAT)" count={projects.filter(p => p.status === "uat").length} color="border-orange-400">
-          {projects.filter(p => p.status === "uat").map(p => <ProjectCard key={p.id} project={p} />)}
-        </KanbanColumn>
-        <KanbanColumn title="เสร็จสิ้น (Completed)" count={projects.filter(p => p.status === "completed").length} color="border-green-500">
-          {projects.filter(p => p.status === "completed").map(p => <ProjectCard key={p.id} project={p} />)}
-        </KanbanColumn>
+        {isLoading ? (
+          <div className="w-full flex justify-center items-center"><Loader2 className="animate-spin text-zinc-400" size={32}/></div>
+        ) : (
+          <>
+            <KanbanColumn title="รอประเมิน (New)" count={projects.filter(p => p.status === "pending").length} color="border-zinc-300 bg-zinc-50/50">
+              {projects.filter(p => p.status === "pending").map(p => <ProjectCard key={p.id} project={p} getClientName={getClientName} />)}
+            </KanbanColumn>
+            <KanbanColumn title="กำลังพัฒนา (In Progress)" count={projects.filter(p => p.status === "inProgress").length} color="border-black">
+              {projects.filter(p => p.status === "inProgress").map(p => <ProjectCard key={p.id} project={p} getClientName={getClientName} />)}
+            </KanbanColumn>
+            <KanbanColumn title="รอตรวจ / แก้ไข (UAT)" count={projects.filter(p => p.status === "uat").length} color="border-orange-400">
+              {projects.filter(p => p.status === "uat").map(p => <ProjectCard key={p.id} project={p} getClientName={getClientName} />)}
+            </KanbanColumn>
+            <KanbanColumn title="เสร็จสิ้น (Completed)" count={projects.filter(p => p.status === "completed").length} color="border-green-500">
+              {projects.filter(p => p.status === "completed").map(p => <ProjectCard key={p.id} project={p} getClientName={getClientName} />)}
+            </KanbanColumn>
+          </>
+        )}
       </div>
 
       {/* ================= Modal: สร้างโปรเจคใหม่ ================= */}
@@ -69,9 +156,9 @@ export default function AdminProjects() {
             
             <motion.div 
               initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }} transition={{ type: "spring", duration: 0.5 }}
-              className="bg-white w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl shadow-2xl relative z-10"
+              className="bg-white w-full max-w-2xl max-h-[90vh] flex flex-col rounded-3xl shadow-2xl relative z-10"
             >
-              <div className="flex justify-between items-center p-5 md:p-6 border-b border-zinc-100 sticky top-0 bg-white/90 backdrop-blur z-20">
+              <div className="flex justify-between items-center p-5 md:p-6 border-b border-zinc-100 shrink-0">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-black text-white rounded-lg"><Briefcase size={18} /></div>
                   <div>
@@ -82,56 +169,59 @@ export default function AdminProjects() {
                 <button onClick={() => setIsAddModalOpen(false)} className="p-2 text-zinc-400 hover:text-black hover:bg-zinc-100 rounded-full transition"><X size={20} /></button>
               </div>
 
-              <div className="p-6 md:p-8 space-y-6">
+              <form onSubmit={handleCreateProject} className="flex-1 overflow-y-auto p-6 md:p-8 space-y-6">
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">ชื่อโปรเจค <span className="text-red-500">*</span></label>
-                    <input type="text" placeholder="เช่น ระบบหลังบ้าน E-Commerce" className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-black transition" />
+                    <input type="text" required value={newProject.title} onChange={e => setNewProject({...newProject, title: e.target.value})} placeholder="เช่น ระบบหลังบ้าน E-Commerce" className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-black transition" />
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">เลือกลูกค้า (Client) <span className="text-red-500">*</span></label>
-                    <select className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-black transition cursor-pointer">
-                      <option value="">-- เลือกลูกค้าจากระบบ CRM --</option>
-                      <option value="C01">คุณสมชาย (คลินิกหมอใจดี)</option>
-                      <option value="C02">คุณนัท (N-SIGHT)</option>
+                    <select required value={newProject.client_id} onChange={e => setNewProject({...newProject, client_id: e.target.value})} className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-black transition cursor-pointer">
+                      <option value="" disabled>-- เลือกลูกค้าจากระบบ CRM --</option>
+                      {clientList.map(client => (
+                        <option key={client.id} value={client.id}>
+                          {client.company_name ? `${client.company_name} (คุณ${client.full_name})` : `คุณ${client.full_name}`}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div>
-                    <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">ประเภทงาน (Tags)</label>
-                    <select className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-black transition cursor-pointer">
-                      <option value="Web App">Web Application</option>
+                    <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">ประเภทงาน</label>
+                    <select value={newProject.type} onChange={e => setNewProject({...newProject, type: e.target.value})} className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-black transition cursor-pointer">
+                      <option value="Web Application">Web Application</option>
                       <option value="Web Design">Web Design</option>
                       <option value="Mobile App">Mobile App</option>
                       <option value="Branding">Branding / Logo</option>
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2 flex items-center gap-1"><Calendar size={12}/> กำหนดส่ง</label>
-                    <input type="date" className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-black transition" />
+                    <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2 flex items-center gap-1"><Calendar size={12}/> กำหนดส่ง (ถ้ามี)</label>
+                    <input type="date" value={newProject.due_date} onChange={e => setNewProject({...newProject, due_date: e.target.value})} className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-black transition" />
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2 flex items-center gap-1"><DollarSign size={12}/> งบประมาณ (฿)</label>
-                    <input type="number" placeholder="50000" className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-black transition" />
+                    <input type="number" value={newProject.budget} onChange={e => setNewProject({...newProject, budget: e.target.value})} placeholder="50000" className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-black transition" />
                   </div>
                 </div>
 
                 <div>
                   <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2 flex items-center gap-1"><AlignLeft size={12}/> รายละเอียด / บรีฟเบื้องต้น</label>
-                  <textarea rows={4} placeholder="รายละเอียดที่ต้องการให้ทีมงานทราบ..." className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-black transition resize-none" />
+                  <textarea value={newProject.description} onChange={e => setNewProject({...newProject, description: e.target.value})} rows={4} placeholder="รายละเอียดที่ต้องการให้ทีมงานทราบ..." className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-black transition resize-none" />
                 </div>
 
-              </div>
-
-              <div className="p-5 border-t border-zinc-100 bg-white flex justify-end gap-3 sticky bottom-0">
-                <button onClick={() => setIsAddModalOpen(false)} className="px-6 py-2.5 text-zinc-600 font-medium rounded-full hover:bg-zinc-100 transition text-sm">ยกเลิก</button>
-                <button className="px-8 py-2.5 bg-black text-white font-bold rounded-full hover:bg-zinc-800 transition shadow-lg shadow-zinc-200 text-sm">
-                  สร้างโปรเจค
-                </button>
-              </div>
+                <div className="p-5 border-t border-zinc-100 bg-white flex justify-end gap-3 sticky bottom-0 mt-6 -mx-6 md:-mx-8">
+                  <button type="button" onClick={() => setIsAddModalOpen(false)} className="px-6 py-2.5 text-zinc-600 font-medium rounded-full hover:bg-zinc-100 transition text-sm">ยกเลิก</button>
+                  <button type="submit" disabled={isCreating} className="px-8 py-2.5 bg-black text-white font-bold rounded-full hover:bg-zinc-800 transition shadow-lg shadow-zinc-200 text-sm flex items-center gap-2">
+                    {isCreating && <Loader2 size={16} className="animate-spin" />}
+                    สร้างโปรเจค
+                  </button>
+                </div>
+              </form>
             </motion.div>
           </div>
         )}
@@ -157,12 +247,20 @@ function KanbanColumn({ title, count, color, children }: { title: string, count:
   );
 }
 
-function ProjectCard({ project }: { project: any }) {
+function ProjectCard({ project, getClientName }: { project: any, getClientName: Function }) {
   const router = useRouter();
+  
+  // แปลง tag ตามประเภทงาน
+  const getTagColor = (type: string) => {
+    if(type?.includes('Design')) return 'bg-purple-100 text-purple-700';
+    if(type?.includes('Mobile')) return 'bg-blue-100 text-blue-700';
+    if(type?.includes('Brand')) return 'bg-orange-100 text-orange-700';
+    return 'bg-zinc-100 text-zinc-700';
+  };
 
   return (
     <motion.div 
-      onClick={() => router.push(`/admin/projects/${project.id}`)}
+      onClick={() => router.push(`/admin/chat/${project.client_id}`)}
       whileHover={{ y: -2 }}
       className={`relative bg-white p-4 rounded-xl border shadow-sm hover:shadow-md transition cursor-pointer group flex flex-col gap-3 ${project.status === 'pending' ? 'border-zinc-300' : 'border-zinc-200 hover:border-black'}`}
     >
@@ -174,27 +272,24 @@ function ProjectCard({ project }: { project: any }) {
 
       <div className="flex justify-between items-start">
         <div className="flex flex-wrap gap-1 mb-1">
-          {project.tags.map((tag: string, index: number) => (
-            <span key={index} className={`px-2 py-0.5 text-[9px] font-bold rounded-md uppercase tracking-wider ${project.status === 'pending' ? 'bg-zinc-800 text-white' : 'bg-zinc-100 text-zinc-600'}`}>
-              {tag}
+            <span className={`px-2 py-0.5 text-[9px] font-bold rounded-md uppercase tracking-wider ${getTagColor(project.type)}`}>
+              {project.type || 'Project'}
             </span>
-          ))}
         </div>
-        <span className="text-[10px] font-bold text-zinc-400">#{project.id}</span>
       </div>
 
       <div>
         <h4 className="font-bold text-zinc-900 leading-tight group-hover:text-blue-600 transition pr-4">{project.title}</h4>
-        <p className="text-[11px] text-zinc-500 mt-1 flex items-center gap-1.5"><Users size={12}/> {project.client}</p>
+        <p className="text-[11px] text-zinc-500 mt-1 flex items-center gap-1.5"><Users size={12}/> {getClientName(project)}</p>
       </div>
 
       <div className="pt-2 border-t border-zinc-100">
         <div className="flex justify-between items-center text-[10px] mb-1.5 font-medium">
           <span className={`flex items-center gap-1 ${project.status === 'pending' ? 'text-orange-500 font-bold' : 'text-zinc-500'}`}>
             {project.status === 'pending' ? <Calendar size={12}/> : <Clock size={12}/>} 
-            {project.due}
+            {project.due_date || 'รอประเมิน'}
           </span>
-          <span className="text-black font-bold">{project.progress}%</span>
+          <span className="text-black font-bold">{project.progress || 0}%</span>
         </div>
         <div className="w-full bg-zinc-100 rounded-full h-1.5 overflow-hidden">
           <div 
@@ -205,7 +300,9 @@ function ProjectCard({ project }: { project: any }) {
       </div>
 
       <div className="flex justify-between items-center pt-2">
-        <span className="text-xs font-bold text-zinc-800">{project.budget} {project.budget !== 'รอประเมิน' && '฿'}</span>
+        <span className="text-xs font-bold text-zinc-800">
+          {project.budget ? `${Number(project.budget).toLocaleString()} ฿` : 'รอประเมิน'}
+        </span>
         {project.progress === 100 && <CheckCircle2 size={16} className="text-green-500" />}
       </div>
     </motion.div>

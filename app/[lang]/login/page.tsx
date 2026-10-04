@@ -118,9 +118,9 @@ export default function LoginPage() {
           <AnimatePresence mode="wait">
             {errorMsg && (
               <motion.div 
-                initial={{ opacity: 0, height: 0, mb: 0 }}
-                animate={{ opacity: 1, height: "auto", mb: 20 }}
-                exit={{ opacity: 0, height: 0, mb: 0 }}
+                initial={{ opacity: 0, height: 0, marginBottom: 0 }}
+  animate={{ opacity: 1, height: "auto", marginBottom: 20 }}
+  exit={{ opacity: 0, height: 0, marginBottom: 0 }}
                 className="bg-red-50 border border-red-100 text-red-600 text-xs font-medium p-3 rounded-xl flex items-start gap-2 overflow-hidden"
               >
                 <AlertCircle size={14} className="mt-0.5 shrink-0" />

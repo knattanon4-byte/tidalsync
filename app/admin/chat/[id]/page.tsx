@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import { useRouter, useParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   ArrowLeft, Paperclip, Send, MoreVertical, FileText, 
@@ -10,17 +11,29 @@ import {
   X, Milestone, Plus, Trash2, CheckSquare, Square, ChevronRight,
   PenTool, Download, Printer, Loader2, FileCheck2
 } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 
-export default function AdminChatRoom({ params }: { params: { id: string } }) {
+export default function AdminChatRoom() { // 🌟 2. เอา params ในวงเล็บออกไปเลย
+  const router = useRouter();
+  const params = useParams(); // 🌟 3. เรียกใช้ useParams ตรงนี้
+  const projectId = params.id as string; // ใช้ project id จาก URL เป็นห้องแชทหลัก
+
   const [newMessage, setNewMessage] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // ================= States =================
+  // ================= States (Database) =================
+  const [chatInbox, setChatInbox] = useState<any[]>([]);
+  const [messages, setMessages] = useState<any[]>([]);
+  const [projectData, setProjectData] = useState<any | null>(null); // ข้อมูลลูกค้าและโปรเจกต์ที่กำลังคุยด้วย
+  const [isLoading, setIsLoading] = useState(true);
+
+  // ================= States (Modals & UI) =================
   const [isTimelineModalOpen, setIsTimelineModalOpen] = useState(false);
   const [isContractModalOpen, setIsContractModalOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const currentDate = new Date().toLocaleDateString('th-TH', { day: 'numeric', month: 'long', year: 'numeric' });
 
+  // 🌟 (TODO) อันนี้อนาคตค่อยผูก Database ส่วน Task ผมเก็บ State เดิมไว้ให้ก่อน
   const [tasks, setTasks] = useState([
     { id: 1, title: "บรีฟงาน & ชำระมัดจำ", completed: true },
     { id: 2, title: "ออกแบบ UI/UX (Figma)", completed: true },
@@ -28,7 +41,6 @@ export default function AdminChatRoom({ params }: { params: { id: string } }) {
     { id: 4, title: "พัฒนาระบบ Backend & Database", completed: false },
     { id: 5, title: "ทดสอบระบบ (UAT)", completed: false },
   ]);
-
   const [tempTasks, setTempTasks] = useState([...tasks]);
   const [newTaskInput, setNewTaskInput] = useState("");
   const [isSendNotification, setIsSendNotification] = useState(true);
@@ -41,27 +53,102 @@ export default function AdminChatRoom({ params }: { params: { id: string } }) {
   };
   const currentProgress = calculateProgress(tasks);
 
-  const chatInbox = [
-    { id: 1, name: "คุณสมชาย", brand: "คลินิกหมอใจดี", msg: "ขอบคุณครับ ขออนุญาตดูราย...", time: "10:15", unread: 1, active: true },
-    { id: 2, name: "คุณนัท", brand: "N-SIGHT", msg: "อยากปรับโทนสีนิดหน่อยครับ", time: "09:30", unread: 0, active: false },
-  ];
+  // ================= 🌟 ดึงข้อมูลจาก Database 🌟 =================
+  const fetchInbox = async () => {
+    try {
+      // ดึงรายชื่อลูกค้าที่เคยคุย (ตอนนี้จำลองดึงจาก profiles ก่อน ในอนาคตควรมีตาราง projects หลัก)
+      const { data, error } = await supabase.from('profiles').select('id, full_name, company_name');
+      if (error) throw error;
+      if (data) setChatInbox(data);
+    } catch (error) {
+      console.error("Error fetching inbox:", error);
+    }
+  };
 
-  const [messages, setMessages] = useState([
-    { id: 1, sender: "admin", text: "สวัสดีครับคุณลูกค้า ทีมงาน TidalSync ได้รับข้อมูลบรีฟงานเรียบร้อยแล้วครับ", time: "10:00", type: "text" },
-    { id: 2, sender: "admin", text: "Quotation_QT-2026-001.pdf", time: "10:01", type: "file", fileSize: "2.4 MB" },
-    { id: 3, sender: "user", text: "ขอบคุณครับ ขออนุญาตดูรายละเอียดสักครู่นะครับ", time: "10:15", type: "text" }
-  ]);
+  const fetchChatData = async () => {
+    setIsLoading(true);
+    try {
+      // 1. ดึงข้อมูลว่ากำลังคุยกับใคร (ดึงโปรไฟล์ลูกค้าตาม ID)
+      const { data: profile, error: profileErr } = await supabase.from('profiles').select('*').eq('id', projectId).single();
+      if (!profileErr && profile) setProjectData(profile);
 
+      // 2. ดึงข้อความแชทของห้องนี้
+      const { data: msgs, error: msgsErr } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('project_id', projectId) // 🌟 ต้องมีคอลัมน์ project_id ในตาราง messages ด้วยนะครับ
+        .order('created_at', { ascending: true });
+      
+      if (msgsErr) throw msgsErr;
+      if (msgs) setMessages(msgs);
+
+    } catch (error) {
+      console.error("Error fetching chat data:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchInbox();
+    if (projectId) fetchChatData();
+  }, [projectId]);
+
+  // ================= 🌟 Real-time Subscription 🌟 =================
+  useEffect(() => {
+    if (!projectId) return;
+    const channel = supabase.channel(`room:${projectId}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `project_id=eq.${projectId}` }, 
+        (payload) => {
+          setMessages((prev) => [...prev, payload.new]);
+        }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [projectId]);
+
+  // เลื่อนลงล่างสุด
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   useEffect(() => { scrollToBottom(); }, [messages]);
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  // ================= 🌟 ส่งข้อความเข้า Database 🌟 =================
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMessage.trim()) return;
-    setMessages([...messages, { id: messages.length + 1, sender: "admin", text: newMessage, time: new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }), type: "text" }]);
-    setNewMessage("");
+
+    const textToSend = newMessage;
+    setNewMessage(""); // ล้างช่องพิมพ์ทันทีให้รู้สึกเร็ว
+
+    try {
+      const { error } = await supabase.from('messages').insert([{
+        project_id: projectId,
+        sender: 'admin',
+        text: textToSend,
+        type: 'text'
+      }]);
+      if (error) throw error;
+    } catch (error) {
+      console.error("Error sending message:", error);
+      alert("ส่งข้อความไม่สำเร็จ");
+    }
   };
 
+  // ================= 🌟 ระบบส่งสัญญาเข้าแชท 🌟 =================
+  const handleSendContractToChat = async () => {
+    setIsContractModalOpen(false);
+    try {
+      // ส่ง 2 ข้อความติดกัน (ข้อความเกริ่น + ไฟล์สัญญา)
+      await supabase.from('messages').insert([
+        { project_id: projectId, sender: 'admin', type: 'text', text: "📄 สัญญาจ้างพัฒนาซอฟต์แวร์ TidalSync พร้อมแล้วครับ รบกวนคุณลูกค้าตรวจสอบและเซ็นชื่อออนไลน์ผ่านลิงก์ด้านล่างได้เลยครับ" },
+        { project_id: projectId, sender: 'admin', type: 'file', text: "🔗 e-Sign: Contract_CT-2026-001", file_size: "Secure Link" } // 🌟 สร้างคอลัมน์ file_size ในตาราง messages ไว้ด้วยนะครับ
+      ]);
+    } catch (error) {
+      console.error("Error sending contract:", error);
+    }
+  };
+
+  // ================= UI Handlers (เหมือนเดิม) =================
   const handleAddTask = () => {
     if (!newTaskInput.trim()) return;
     setTempTasks([...tempTasks, { id: Date.now(), title: newTaskInput, completed: false }]);
@@ -70,7 +157,7 @@ export default function AdminChatRoom({ params }: { params: { id: string } }) {
   const handleDeleteTask = (id: number) => setTempTasks(tempTasks.filter(t => t.id !== id));
   const handleToggleTask = (id: number) => setTempTasks(tempTasks.map(t => t.id === id ? { ...t, completed: !t.completed } : t));
 
-  const handleSaveTimeline = () => {
+  const handleSaveTimeline = async () => {
     const newlyCompleted = tempTasks.filter(temp => temp.completed && !tasks.find(t => t.id === temp.id)?.completed);
     setTasks(tempTasks);
     setIsTimelineModalOpen(false);
@@ -79,31 +166,26 @@ export default function AdminChatRoom({ params }: { params: { id: string } }) {
       const newProgress = calculateProgress(tempTasks);
       const completedTitles = newlyCompleted.map(t => `✅ ${t.title}`).join('\n');
       const updateMsg = `🔔 อัปเดตความคืบหน้าโปรเจค (รวม ${newProgress}%):\n${completedTitles}`;
-      setMessages(prev => [...prev, { id: prev.length + 1, sender: "admin", text: updateMsg, time: new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }), type: "text" }]);
+      
+      // ส่งข้อความแจ้งเตือนอัตโนมัติเข้า Database
+      await supabase.from('messages').insert([{
+        project_id: projectId,
+        sender: 'system', // ส่งในนามระบบ
+        text: updateMsg,
+        type: 'text'
+      }]);
     }
-  };
-
-  const handleSendContractToChat = () => {
-    setIsContractModalOpen(false);
-    setMessages(prev => [
-      ...prev, 
-      { id: prev.length + 1, sender: "admin", text: "📄 สัญญาจ้างพัฒนาซอฟต์แวร์ TidalSync พร้อมแล้วครับ รบกวนคุณลูกค้าตรวจสอบและเซ็นชื่อออนไลน์ผ่านลิงก์ด้านล่างได้เลยครับ", time: new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }), type: "text" },
-      { id: prev.length + 2, sender: "admin", text: "🔗 e-Sign: Contract_CT-2026-001", time: new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }), type: "file", fileSize: "Secure Link" }
-    ]);
   };
 
   const handleExportPDF = () => {
     setIsExporting(true);
-    setTimeout(() => {
-      setIsExporting(false);
-      window.print(); 
-    }, 1000);
+    setTimeout(() => { setIsExporting(false); window.print(); }, 1000);
   };
 
   return (
     <div className="flex-1 flex flex-col md:flex-row h-screen overflow-hidden bg-zinc-50 relative print:bg-white print:block">
       
-      {/* ================= เวทมนตร์ CSS บังคับหน้ากระดาษ A4 ตอนปริ้นท์ ================= */}
+      {/* เวทมนตร์ CSS บังคับหน้ากระดาษ A4 */}
       <style dangerouslySetInnerHTML={{__html: `
         @media print {
           @page { size: A4 portrait; margin: 0; }
@@ -124,20 +206,20 @@ export default function AdminChatRoom({ params }: { params: { id: string } }) {
           </div>
         </div>
         <div className="flex-1 overflow-y-auto">
-          {chatInbox.map((chat) => (
-            <Link key={chat.id} href={`/admin/chat/${chat.id}`} className={`flex items-start gap-3 p-4 border-b border-zinc-50 hover:bg-zinc-50 transition cursor-pointer ${chat.active ? 'bg-zinc-50 border-l-4 border-l-black' : 'border-l-4 border-l-transparent'}`}>
-              <div className="w-10 h-10 rounded-full bg-zinc-200 shrink-0 flex items-center justify-center font-bold text-zinc-500">{chat.name.charAt(0)}</div>
-              <div className="flex-1 min-w-0">
-                <div className="flex justify-between items-baseline mb-0.5">
-                  <h4 className="text-sm font-bold text-zinc-900 truncate">{chat.name}</h4>
-                  <span className="text-[10px] text-zinc-400 font-medium shrink-0">{chat.time}</span>
+          {chatInbox.map((chat) => {
+            const isActive = chat.id === projectId;
+            return (
+              <Link key={chat.id} href={`/admin/chat/${chat.id}`} className={`flex items-start gap-3 p-4 border-b border-zinc-50 hover:bg-zinc-50 transition cursor-pointer ${isActive ? 'bg-zinc-50 border-l-4 border-l-black' : 'border-l-4 border-l-transparent'}`}>
+                <div className="w-10 h-10 rounded-full bg-zinc-200 shrink-0 flex items-center justify-center font-bold text-zinc-500">{chat.full_name?.charAt(0) || '?'}</div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex justify-between items-baseline mb-0.5">
+                    <h4 className="text-sm font-bold text-zinc-900 truncate">{chat.full_name}</h4>
+                  </div>
+                  <p className="text-xs text-zinc-500 truncate mb-1">{chat.company_name || 'บุคคลทั่วไป'}</p>
                 </div>
-                <p className="text-xs text-zinc-500 truncate mb-1">{chat.brand}</p>
-                <p className={`text-xs truncate ${chat.unread > 0 ? 'text-black font-bold' : 'text-zinc-400'}`}>{chat.msg}</p>
-              </div>
-              {chat.unread > 0 && <div className="w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0 mt-2">{chat.unread}</div>}
-            </Link>
-          ))}
+              </Link>
+            );
+          })}
         </div>
       </aside>
 
@@ -146,9 +228,13 @@ export default function AdminChatRoom({ params }: { params: { id: string } }) {
         <header className="bg-white px-4 py-4 border-b border-zinc-200 flex items-center justify-between sticky top-0 z-10 shadow-sm">
           <div className="flex items-center gap-3">
             <Link href="/admin" className="md:hidden p-2 -ml-2 text-zinc-400 hover:text-black transition"><ArrowLeft size={20} /></Link>
-            <div className="w-10 h-10 rounded-full bg-zinc-200 flex items-center justify-center font-bold text-zinc-500">ค</div>
+            <div className="w-10 h-10 rounded-full bg-zinc-200 flex items-center justify-center font-bold text-zinc-500">
+              {projectData?.full_name?.charAt(0) || '?'}
+            </div>
             <div>
-              <h1 className="text-base font-bold text-zinc-900 leading-tight">คุณสมชาย (คลินิกหมอใจดี)</h1>
+              <h1 className="text-base font-bold text-zinc-900 leading-tight">
+                {projectData?.full_name || 'Loading...'} {projectData?.company_name ? `(${projectData.company_name})` : ''}
+              </h1>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className="w-2 h-2 rounded-full bg-green-500"></span>
                 <p className="text-[10px] md:text-xs text-zinc-500 font-medium">ออนไลน์</p>
@@ -160,45 +246,67 @@ export default function AdminChatRoom({ params }: { params: { id: string } }) {
 
         <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
           <div className="text-center mb-8">
-            <span className="text-[10px] font-bold bg-zinc-200 text-zinc-500 px-3 py-1 rounded-full uppercase tracking-wider">วันนี้</span>
+            <span className="text-[10px] font-bold bg-zinc-200 text-zinc-500 px-3 py-1 rounded-full uppercase tracking-wider">แชทโปรเจกต์</span>
           </div>
 
-          {messages.map((msg) => {
-            const isAdmin = msg.sender === "admin";
-            return (
-              <motion.div key={msg.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex w-full ${isAdmin ? "justify-end" : "justify-start"}`}>
-                <div className={`flex max-w-[85%] md:max-w-[70%] gap-2 md:gap-3 ${isAdmin ? "flex-row-reverse" : "flex-row"}`}>
-                  <div className="shrink-0 mt-auto">
-                    {isAdmin ? (
-                      <div className="w-8 h-8 rounded-full bg-black flex items-center justify-center shadow-sm"><Image src="/tidalsynclogo.png" alt="Admin" width={20} height={20} className="brightness-0 invert" /></div>
-                    ) : (
-                      <div className="w-8 h-8 rounded-full bg-zinc-200 flex items-center justify-center border border-zinc-300 font-bold text-zinc-500 text-xs">ค</div>
-                    )}
-                  </div>
-                  <div className={`flex flex-col ${isAdmin ? "items-end" : "items-start"}`}>
-                    {msg.type === "text" ? (
-                      <div className={`px-4 py-3 rounded-2xl text-[14px] md:text-[15px] shadow-sm whitespace-pre-wrap ${isAdmin ? "bg-black text-white rounded-br-sm" : "bg-white border border-zinc-200 text-zinc-800 rounded-bl-sm"}`}>
+          {isLoading ? (
+            <div className="flex justify-center items-center h-full"><Loader2 className="animate-spin text-zinc-400" size={24} /></div>
+          ) : messages.length === 0 ? (
+            <div className="text-center text-zinc-400 text-sm mt-10">ยังไม่มีข้อความ เริ่มต้นทักทายลูกค้าได้เลยครับ</div>
+          ) : (
+            messages.map((msg) => {
+              const isAdmin = msg.sender === "admin";
+              const isSystem = msg.sender === "system";
+              
+              // 🌟 แสดงข้อความแจ้งเตือนระบบ
+              if (isSystem) {
+                return (
+                  <div key={msg.id} className="flex justify-center w-full my-4">
+                     <div className="bg-zinc-200/50 text-zinc-500 text-[11px] font-bold px-4 py-2 rounded-full whitespace-pre-wrap text-center max-w-[80%] border border-zinc-200">
                         {msg.text}
-                      </div>
-                    ) : (
-                      <div className={`flex items-center gap-3 p-3 md:p-4 rounded-2xl border cursor-pointer transition shadow-sm ${isAdmin ? "bg-white border-zinc-200 text-zinc-800 rounded-br-sm hover:bg-zinc-50" : "bg-white border-zinc-200 text-zinc-800 rounded-bl-sm hover:bg-zinc-50"}`}>
-                        <div className={`p-2.5 rounded-xl ${msg.fileSize === 'Secure Link' ? 'bg-purple-50 text-purple-600' : 'bg-blue-50 text-blue-600'}`}>
-                          {msg.fileSize === 'Secure Link' ? <FileCheck2 size={20} /> : <FileText size={20} />}
+                     </div>
+                  </div>
+                );
+              }
+
+              // แสดงข้อความปกติ
+              const timeString = new Date(msg.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+              
+              return (
+                <motion.div key={msg.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex w-full ${isAdmin ? "justify-end" : "justify-start"}`}>
+                  <div className={`flex max-w-[85%] md:max-w-[70%] gap-2 md:gap-3 ${isAdmin ? "flex-row-reverse" : "flex-row"}`}>
+                    <div className="shrink-0 mt-auto">
+                      {isAdmin ? (
+                        <div className="w-8 h-8 rounded-full bg-black flex items-center justify-center shadow-sm"><Image src="/tidalsynclogo.png" alt="Admin" width={20} height={20} className="brightness-0 invert" /></div>
+                      ) : (
+                        <div className="w-8 h-8 rounded-full bg-zinc-200 flex items-center justify-center border border-zinc-300 font-bold text-zinc-500 text-xs">{projectData?.full_name?.charAt(0) || 'ค'}</div>
+                      )}
+                    </div>
+                    <div className={`flex flex-col ${isAdmin ? "items-end" : "items-start"}`}>
+                      {msg.type === "text" || !msg.type ? (
+                        <div className={`px-4 py-3 rounded-2xl text-[14px] md:text-[15px] shadow-sm whitespace-pre-wrap ${isAdmin ? "bg-black text-white rounded-br-sm" : "bg-white border border-zinc-200 text-zinc-800 rounded-bl-sm"}`}>
+                          {msg.text}
                         </div>
-                        <div>
-                          <p className="text-sm font-bold truncate max-w-[180px] md:max-w-[250px]">{msg.text}</p>
-                          <p className="text-xs mt-0.5 text-zinc-500">{msg.fileSize}</p>
+                      ) : (
+                        <div className={`flex items-center gap-3 p-3 md:p-4 rounded-2xl border cursor-pointer transition shadow-sm ${isAdmin ? "bg-white border-zinc-200 text-zinc-800 rounded-br-sm hover:bg-zinc-50" : "bg-white border-zinc-200 text-zinc-800 rounded-bl-sm hover:bg-zinc-50"}`}>
+                          <div className={`p-2.5 rounded-xl ${msg.file_size === 'Secure Link' ? 'bg-purple-50 text-purple-600' : 'bg-blue-50 text-blue-600'}`}>
+                            {msg.file_size === 'Secure Link' ? <FileCheck2 size={20} /> : <FileText size={20} />}
+                          </div>
+                          <div>
+                            <p className="text-sm font-bold truncate max-w-[180px] md:max-w-[250px]">{msg.text}</p>
+                            <p className="text-xs mt-0.5 text-zinc-500">{msg.file_size || 'File'}</p>
+                          </div>
                         </div>
+                      )}
+                      <div className="flex items-center gap-1 mt-1 text-[10px] text-zinc-400 font-medium px-1">
+                        {timeString} {isAdmin && <CheckCircle2 size={12} className="text-blue-500" />}
                       </div>
-                    )}
-                    <div className="flex items-center gap-1 mt-1 text-[10px] text-zinc-400 font-medium px-1">
-                      {msg.time} {isAdmin && <CheckCircle2 size={12} className="text-blue-500" />}
                     </div>
                   </div>
-                </div>
-              </motion.div>
-            );
-          })}
+                </motion.div>
+              );
+            })
+          )}
           <div ref={messagesEndRef} />
         </div>
 
@@ -257,7 +365,6 @@ export default function AdminChatRoom({ params }: { params: { id: string } }) {
               <button className="w-full flex items-center gap-3 p-3 rounded-xl border border-zinc-200 hover:border-black bg-white transition shadow-sm font-bold text-sm text-left">
                 <FileSignature size={18} /> สร้างใบเสนอราคา
               </button>
-              {/* 🌟 ปุ่มใหม่: สร้างสัญญาจ้าง */}
               <button onClick={() => setIsContractModalOpen(true)} className="w-full flex items-center gap-3 p-3 rounded-xl border-2 border-black bg-black text-white hover:bg-zinc-800 transition shadow-md font-bold text-sm text-left">
                 <PenTool size={18} /> สร้างสัญญาจ้าง (Contract)
               </button>
@@ -280,13 +387,11 @@ export default function AdminChatRoom({ params }: { params: { id: string } }) {
       </aside>
 
       {/* ================= Task Modal (ย่อไว้) ================= */}
-      {/* ... โค้ด Modal Task เดิม ... */}
       <AnimatePresence>
         {isTimelineModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 print:hidden">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setIsTimelineModalOpen(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }} transition={{ type: "spring", duration: 0.5 }} className="bg-white w-full max-w-md rounded-3xl shadow-2xl relative z-10 flex flex-col max-h-[85vh]">
-              {/* ... (โค้ด Task ภายในเหมือนเดิม) ... */}
               <div className="flex justify-between items-center p-5 border-b border-zinc-100 shrink-0">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Milestone size={18} /></div>
@@ -337,17 +442,13 @@ export default function AdminChatRoom({ params }: { params: { id: string } }) {
       <AnimatePresence>
         {isContractModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 md:p-6 print:static print:block print:p-0 print:m-0 print:z-auto">
-            
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setIsContractModalOpen(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm print:hidden" />
-            
             <motion.div 
               initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }} transition={{ type: "spring", duration: 0.4 }}
               className="bg-white w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-xl shadow-2xl relative z-10 print:static print:h-auto print:max-h-none print:shadow-none print:w-full print:max-w-full print:rounded-none print:overflow-visible print:p-10"
             >
               <button onClick={() => setIsContractModalOpen(false)} className="absolute top-4 right-4 p-2 text-zinc-400 hover:text-black transition print:hidden z-20"><X size={20} /></button>
-
               <div className="p-8 md:p-14 print:p-0 min-w-[700px] mx-auto text-zinc-900 font-sans flex flex-col justify-between min-h-full">
-                
                 <div>
                   <div className="flex justify-between items-start mb-10">
                     <div className="w-1/2">
@@ -360,13 +461,11 @@ export default function AdminChatRoom({ params }: { params: { id: string } }) {
                       <p><span className="font-bold">วันที่ (Date):</span> {currentDate}</p>
                     </div>
                   </div>
-
                   <div className="space-y-6 text-sm text-zinc-800 leading-relaxed print:text-black">
                     <p>
                       สัญญาฉบับนี้ทำขึ้น ณ <strong>TidalSync Studio</strong> ระหว่าง <strong>TidalSync (ผู้รับจ้าง)</strong> 
-                      และ <strong>คุณสมชาย คลินิกหมอใจดี (ผู้ว่าจ้าง)</strong> โดยทั้งสองฝ่ายตกลงทำสัญญาตามเงื่อนไขดังต่อไปนี้:
+                      และ <strong>{projectData?.full_name || 'คุณสมชาย'} {projectData?.company_name ? `(${projectData.company_name})` : ''} (ผู้ว่าจ้าง)</strong> โดยทั้งสองฝ่ายตกลงทำสัญญาตามเงื่อนไขดังต่อไปนี้:
                     </p>
-
                     <div className="pl-4 border-l-2 border-black space-y-4">
                       <div>
                         <h4 className="font-bold text-black mb-1">ข้อ 1. ขอบเขตงาน (Scope of Work)</h4>
@@ -390,13 +489,12 @@ export default function AdminChatRoom({ params }: { params: { id: string } }) {
                       </div>
                     </div>
                   </div>
-
                   <div className="w-full flex justify-between mt-20 text-center text-sm print:text-black">
                     <div className="flex flex-col items-center w-1/2">
                       <div className="w-48 border-b border-zinc-400 print:border-black mb-3 h-16 flex items-end justify-center pb-2 text-zinc-300 italic text-xs">
                         (ลายมือชื่อผู้ว่าจ้าง / E-Signature)
                       </div>
-                      <p className="font-bold">คุณสมชาย (คลินิกหมอใจดี)</p>
+                      <p className="font-bold">{projectData?.full_name || 'คุณสมชาย'}</p>
                       <p className="text-xs text-zinc-500 mt-1">ผู้ว่าจ้าง (Client)</p>
                     </div>
                     <div className="flex flex-col items-center w-1/2">
@@ -408,28 +506,17 @@ export default function AdminChatRoom({ params }: { params: { id: string } }) {
                     </div>
                   </div>
                 </div>
-
               </div>
             </motion.div>
-
-            {/* ปุ่ม Action (ซ่อนตอน Print: print:hidden) */}
             <div className="absolute bottom-6 right-6 flex gap-3 print:hidden z-50">
-              <button 
-                onClick={handleExportPDF}
-                disabled={isExporting}
-                className="px-5 py-2.5 bg-white border border-zinc-200 text-zinc-700 font-medium rounded-full hover:bg-zinc-50 transition text-sm flex items-center justify-center gap-2 disabled:opacity-50 shadow-xl"
-              >
+              <button onClick={handleExportPDF} disabled={isExporting} className="px-5 py-2.5 bg-white border border-zinc-200 text-zinc-700 font-medium rounded-full hover:bg-zinc-50 transition text-sm flex items-center justify-center gap-2 disabled:opacity-50 shadow-xl">
                 {isExporting ? <Loader2 size={16} className="animate-spin" /> : <Printer size={16} />}
                 {isExporting ? "กำลังสร้าง PDF..." : "พิมพ์ / PDF"}
               </button>
-              <button 
-                onClick={handleSendContractToChat}
-                className="px-6 py-2.5 bg-black text-white font-medium rounded-full hover:bg-zinc-800 transition shadow-xl shadow-zinc-200/50 text-sm flex items-center justify-center gap-2"
-              >
+              <button onClick={handleSendContractToChat} className="px-6 py-2.5 bg-black text-white font-medium rounded-full hover:bg-zinc-800 transition shadow-xl shadow-zinc-200/50 text-sm flex items-center justify-center gap-2">
                 <Send size={16} /> ส่งให้ลูกค้าเซ็น (e-Sign)
               </button>
             </div>
-
           </div>
         )}
       </AnimatePresence>
