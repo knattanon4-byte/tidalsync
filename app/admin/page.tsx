@@ -34,8 +34,21 @@ export default function AdminDashboard() {
   const fetchDashboardData = async () => {
     setIsLoading(true);
     try {
-      // ดึงโปรเจกต์ทั้งหมดที่มีในระบบ พร้อมดึงชื่อลูกค้ามาจากตาราง profiles
-      const { data: projects, error } = await supabase
+      // 1. ดึง "คำขอโปรเจกต์ใหม่" จากตาราง inquiries
+      const { data: inquiriesData, error: inquiriesError } = await supabase
+        .from('inquiries')
+        .select(`
+          *,
+          profiles:user_id (full_name, company_name)
+        `)
+        .order('created_at', { ascending: false });
+
+      if (inquiriesError) {
+        console.error("Error fetching inquiries:", inquiriesError.message);
+      }
+
+      // 2. ถ้ามีตาราง projects ก็ดึงมา (สำหรับงานที่กดรับแล้ว)
+      const { data: projectsData } = await supabase
         .from('projects')
         .select(`
           *,
@@ -43,36 +56,43 @@ export default function AdminDashboard() {
         `)
         .order('created_at', { ascending: false });
 
-      if (error) {
-        // ถ้าตาราง projects ยังไม่มี (Error) ให้ใช้ Mock Data ขำๆ ไปก่อนเพื่อไม่ให้เว็บพัง
-        console.error("ยังไม่มีตาราง projects:", error.message);
-        return; 
+      // 3. จัดการข้อมูลเอาไปใส่ Stats
+      let pending = 0, active = 0, completed = 0, revenue = 0;
+      const pendingList: any[] = [];
+      const activeList: any[] = [];
+
+      // นับ Inquiries (คำขอใหม่)
+      if (inquiriesData) {
+        inquiriesData.forEach(req => {
+          if (req.status === 'pending') {
+            pending++;
+            pendingList.push({
+               ...req, 
+               title: req.project_name, // แปลงให้ชื่อตรงกับโครงสร้างเดิมที่ UI ต้องการ
+               type: req.project_type,
+               client_id: req.user_id 
+            });
+          }
+        });
       }
 
-      if (projects) {
-        // 1. คำนวณสถิติด้านบน
-        let pending = 0, active = 0, completed = 0, revenue = 0;
-        const pendingList: any[] = [];
-        const activeList: any[] = [];
-
-        projects.forEach(p => {
-          if (p.status === 'pending') {
-            pending++;
-            pendingList.push(p);
-          } else if (p.status === 'inProgress') {
+      // นับ Projects (งานที่กำลังทำ/เสร็จแล้ว)
+      if (projectsData) {
+        projectsData.forEach(p => {
+          if (p.status === 'inProgress') {
             active++;
             activeList.push(p);
           } else if (p.status === 'completed') {
             completed++;
-            // สมมติว่าเก็บ budget เป็นตัวเลขใน Database
             revenue += Number(p.budget || 0); 
           }
         });
-
-        setStats({ pending, active, completed, revenue });
-        setNewRequests(pendingList.slice(0, 5)); // โชว์แค่ 5 อันล่าสุด
-        setActiveProjects(activeList.slice(0, 4));
       }
+
+      setStats({ pending, active, completed, revenue });
+      setNewRequests(pendingList.slice(0, 5)); // โชว์ 5 อันล่าสุด
+      setActiveProjects(activeList.slice(0, 4));
+
     } catch (error) {
       console.error("Error fetching dashboard data:", error);
     } finally {
@@ -302,7 +322,7 @@ export default function AdminDashboard() {
                     <div>
                       <h4 className="text-sm font-bold text-zinc-900 mb-2">รายละเอียดบรีฟ (Raw Brief)</h4>
                       <div className="p-4 bg-zinc-50 rounded-xl border border-zinc-100 text-sm text-zinc-700 leading-relaxed italic whitespace-pre-wrap">
-                        {selectedReq.description || "ลูกค้ายังไม่ได้ระบุรายละเอียดเพิ่มเติม"}
+                        {selectedReq.brief || selectedReq.description || "ลูกค้ายังไม่ได้ระบุรายละเอียดเพิ่มเติม"}
                       </div>
                     </div>
                   </div>
@@ -398,7 +418,7 @@ export default function AdminDashboard() {
                         <input type="text" defaultValue={`พัฒนา ${selectedReq.type || 'ระบบ'}`} className="w-full font-bold outline-none border-b border-transparent focus:border-zinc-200 bg-transparent print:border-none print:outline-none print:p-0" />
                         <textarea 
                           rows={3} 
-                          defaultValue={selectedReq.description || "- พัฒนาระบบตามที่ตกลง\n- ส่งมอบ Source Code"}
+                          defaultValue={selectedReq.brief || selectedReq.description || "- พัฒนาระบบตามที่ตกลง\n- ส่งมอบ Source Code"}
                           className="w-full outline-none resize-none leading-relaxed text-zinc-600 print:text-black bg-transparent print:border-none print:p-0" 
                         />
                       </div>

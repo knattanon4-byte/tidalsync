@@ -4,20 +4,62 @@ import { useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { Lock, Mail, ShieldAlert } from "lucide-react";
+import { Lock, Mail, ShieldAlert, Loader2, AlertCircle } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 
 export default function AdminLogin() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    router.push("/admin"); // พาบอสเข้าหน้า Admin Dashboard
+    setIsLoading(true);
+    setErrorMsg("");
+
+    try {
+      // 1. ลองล็อคอินด้วย Email / Password ในระบบ
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (authError) throw authError;
+
+      // 2. ล็อคอินสำเร็จ! แวะตรวจบัตรพนักงานก่อน (ดึงข้อมูล role จาก profiles)
+      const { data: profileData, error: profileError } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', authData.user.id)
+        .single(); // ดึงมาแค่คนเดียว
+
+      // 3. ถ้าไม่ใช่ admin (หรือไม่มีข้อมูล role) ให้เตะออกทันที!
+      if (!profileData || profileData.role !== 'admin') {
+        await supabase.auth.signOut(); // บังคับออกจากระบบ
+        throw new Error("ACCESS_DENIED"); // โยน Error ไปให้ catch ดักจับ
+      }
+
+      // 4. ถ้าผ่านด่านมาได้ (เป็น admin) พาเข้า Dashboard เลย!
+      router.push("/admin");
+
+    } catch (error: any) {
+      // ดัก Error แจ้งเตือน
+      if (error.message === "ACCESS_DENIED") {
+        setErrorMsg("บัญชีนี้ไม่มีสิทธิ์เข้าถึงระบบหลังบ้าน (Restricted Area)!");
+      } else if (error.message.includes("Invalid login credentials") || error.message.includes("invalid claim")) {
+        setErrorMsg("อีเมลหรือรหัสผ่านไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง");
+      } else {
+        setErrorMsg(error.message);
+      }
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
-    <main className="min-h-screen bg-black flex flex-col justify-center items-center p-4 relative font-sans selection:bg-zinc-800">
+    <main className="min-h-screen w-full bg-black flex flex-col justify-center items-center p-4 relative font-sans selection:bg-zinc-800">
       
       {/* วงกลมแสง Background ให้ดูมีความลึกลับ */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-white/5 rounded-full blur-[100px] pointer-events-none"></div>
@@ -33,6 +75,17 @@ export default function AdminLogin() {
           <Image src="/tidalsynclogo.png" alt="TidalSync" width={100} height={40} className="object-contain brightness-0 invert mb-2" />
           <p className="text-xs text-zinc-400 font-medium tracking-widest uppercase">System Access</p>
         </div>
+
+        {/* แสดงข้อความแจ้งเตือน Error */}
+        {errorMsg && (
+          <motion.div 
+            initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
+            className="w-full mb-4 p-3 bg-red-500/10 border border-red-500/50 rounded-xl flex items-start gap-2 text-red-500 text-xs font-medium"
+          >
+            <AlertCircle size={14} className="shrink-0 mt-0.5" />
+            <span>{errorMsg}</span>
+          </motion.div>
+        )}
 
         <form onSubmit={handleLogin} className="w-full space-y-4">
           <div>
@@ -59,8 +112,12 @@ export default function AdminLogin() {
             </div>
           </div>
 
-          <button type="submit" className="w-full mt-4 py-3 bg-white text-black font-bold rounded-xl hover:bg-zinc-200 transition text-sm flex items-center justify-center gap-2">
-            Authorize &rarr;
+          <button 
+            type="submit" 
+            disabled={isLoading}
+            className="w-full mt-4 py-3 bg-white text-black font-bold rounded-xl hover:bg-zinc-200 transition text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            {isLoading ? <Loader2 size={16} className="animate-spin" /> : "Authorize \u2192"}
           </button>
         </form>
 

@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { 
   ArrowLeft, Send, Code, ShoppingCart, Sparkles, CheckCircle2, 
   Paperclip, Link as LinkIcon, Building2, Calendar, ChevronLeft, ChevronRight, 
-  Loader2, MessageSquare, FileText, ChevronDown // 🌟 เพิ่ม ChevronDown
+  Loader2, MessageSquare, FileText, ChevronDown, AlertCircle 
 } from "lucide-react";
 import { supabase } from "@/lib/supabase"; 
 
@@ -23,7 +23,8 @@ export default function NewProjectPage() {
   const [brief, setBrief] = useState("");
   const [referenceUrl, setReferenceUrl] = useState("");
   
-  // 🌟 State ใหม่: ข้อมูลสำหรับออกเอกสาร & เก็บข้อมูลผู้ใช้
+  // State ข้อมูลสำหรับออกเอกสาร & เก็บข้อมูลผู้ใช้
+  const [fullName, setFullName] = useState(""); // 🌟 เพิ่ม State สำหรับเก็บ full_name
   const [billingAddress, setBillingAddress] = useState("");
   const [taxId, setTaxId] = useState("");
   const [userId, setUserId] = useState<string | null>(null);
@@ -35,7 +36,10 @@ export default function NewProjectPage() {
   const [isBudgetFlexible, setIsBudgetFlexible] = useState(false); 
   const [bookingDate, setBookingDate] = useState(""); 
 
-  // 🌟 State สำหรับ Custom Dropdown ระยะเวลา
+  // State สำหรับเก็บข้อความ Error แบบสวยงาม
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // State สำหรับ Custom Dropdown ระยะเวลา
   const [isTimelineOpen, setIsTimelineOpen] = useState(false);
   const timelineOptions = [
     { value: "urgent", label: "ด่วนมาก (ภายใน 2 สัปดาห์)" },
@@ -45,7 +49,7 @@ export default function NewProjectPage() {
   ];
   const selectedTimelineLabel = timelineOptions.find(t => t.value === timeline)?.label || "";
 
-  // 🌟 ดึงข้อมูลจาก Profile มา Auto-fill ตอนเปิดหน้าเว็บ
+  // ดึงข้อมูลจาก Profile มา Auto-fill
   useEffect(() => {
     const fetchProfileData = async () => {
       const { data: { user } } = await supabase.auth.getUser();
@@ -54,11 +58,12 @@ export default function NewProjectPage() {
         
         const { data: profile } = await supabase
           .from('profiles')
-          .select('company_name, billing_address, tax_id')
+          .select('full_name, company_name, billing_address, tax_id') // 🌟 ดึง full_name มาด้วย
           .eq('id', user.id)
           .single();
 
         if (profile) {
+          if (profile.full_name) setFullName(profile.full_name); // 🌟 เก็บลง State
           if (profile.company_name) setCompanyName(profile.company_name);
           if (profile.billing_address) setBillingAddress(profile.billing_address);
           if (profile.tax_id) setTaxId(profile.tax_id);
@@ -126,15 +131,33 @@ export default function NewProjectPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
+    setSubmitError(null); 
 
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("ไม่พบข้อมูลผู้ใช้งาน กรุณาล็อคอินใหม่");
+
+      // 🌟 1. สร้างหรืออัปเดตข้อมูล Profile ก่อน (ใส่ full_name ป้องกัน Not Null Error)
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .upsert({
+          id: user.id, 
+          full_name: fullName, // 🌟 ส่ง full_name กลับไปด้วย
+          company_name: companyName,
+          billing_address: billingAddress,
+          tax_id: taxId
+        }, { onConflict: 'id' }); 
+
+      if (profileError) throw profileError;
+
       const typeLabel = projectTypes.find(t => t.id === selectedType)?.title || "Other";
 
+      // 🌟 2. เมื่อมี Profile ในระบบแล้ว ค่อยบันทึกโปรเจกต์ลง Inquiries
       const { data: inquiryData, error: inquiryError } = await supabase
         .from('inquiries')
         .insert([
           {
-            user_id: userId,
+            user_id: user.id,
             project_name: projectName,
             company_name: companyName,
             project_type: typeLabel,
@@ -142,7 +165,7 @@ export default function NewProjectPage() {
             is_budget_flexible: isBudgetFlexible,
             timeline: timeline,
             brief: brief,
-            booking_date: bookingDate || null,
+            booking_date: bookingDate,
             reference_url: referenceUrl,
             status: 'pending'
           }
@@ -151,24 +174,13 @@ export default function NewProjectPage() {
         .single();
 
       if (inquiryError) throw inquiryError;
-      
-      if (userId) {
-         await supabase
-           .from('profiles')
-           .update({
-             company_name: companyName,
-             billing_address: billingAddress,
-             tax_id: taxId
-           })
-           .eq('id', userId);
-      }
 
       setCreatedProjectId(inquiryData.id);
       setIsSubmitted(true); 
 
     } catch (error: any) {
       console.error("Error submitting:", error.message);
-      alert("เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง");
+      setSubmitError(error.message); 
     } finally {
       setIsSubmitting(false);
     }
@@ -206,12 +218,32 @@ export default function NewProjectPage() {
                 <p className="text-zinc-500 mt-2">บอกเล่าไอเดียของคุณให้เราฟัง เพื่อให้ทีมงานประเมินราคาและระยะเวลาเบื้องต้น</p>
               </div>
 
+              {/* แจ้งเตือน Error แบบสวยงาม */}
+              <AnimatePresence>
+                {submitError && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: -10, height: 0 }}
+                    animate={{ opacity: 1, y: 0, height: "auto" }}
+                    exit={{ opacity: 0, y: -10, height: 0 }}
+                    className="mb-8 overflow-hidden"
+                  >
+                    <div className="p-4 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-3">
+                      <AlertCircle className="text-red-500 shrink-0 mt-0.5" size={20} />
+                      <div>
+                        <h4 className="text-sm font-bold text-red-800">ไม่สามารถส่งข้อมูลได้</h4>
+                        <p className="text-xs text-red-600 mt-1">{submitError}</p>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
               <form onSubmit={handleSubmit} className="space-y-8">
                 
                 {/* 1. ชื่อโปรเจค & ชื่อแบรนด์ */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
-                    <label className="block text-sm font-bold text-zinc-900 mb-3">1. ชื่อโปรเจคของคุณ</label>
+                    <label className="block text-sm font-bold text-zinc-900 mb-3">1. ชื่อโปรเจคของคุณ <span className="text-red-500">*</span></label>
                     <input 
                       type="text" 
                       value={projectName}
@@ -240,7 +272,7 @@ export default function NewProjectPage() {
 
                 {/* 2. ประเภทโปรเจค */}
                 <div>
-                  <label className="block text-sm font-bold text-zinc-900 mb-4">2. ประเภทงานที่สนใจ</label>
+                  <label className="block text-sm font-bold text-zinc-900 mb-4">2. ประเภทงานที่สนใจ <span className="text-red-500">*</span></label>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {projectTypes.map((type) => (
                       <div 
@@ -267,14 +299,14 @@ export default function NewProjectPage() {
                       </div>
                     ))}
                   </div>
-                  {/* ซ่อน input ไว้เพื่อทำ Required Validation สำหรับโปรเจค */}
+                  {/* ซ่อน input ไว้เพื่อทำ Required Validation */}
                   <input type="text" readOnly required value={selectedType || ""} className="opacity-0 absolute w-px h-px pointer-events-none -z-10" tabIndex={-1} />
                 </div>
 
                 {/* 3. งบประมาณ & ระยะเวลา */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
-                    <label className="block text-sm font-bold text-zinc-900 mb-3">3. งบประมาณโดยประมาณ (บาท)</label>
+                    <label className="block text-sm font-bold text-zinc-900 mb-3">3. งบประมาณโดยประมาณ (บาท) <span className="text-red-500">*</span></label>
                     <div className="relative">
                       <input 
                         type="number" 
@@ -301,12 +333,9 @@ export default function NewProjectPage() {
                     </label>
                   </div>
 
-                  {/* 🌟 4. ระยะเวลาที่ต้องการรับงาน (Custom Dropdown) */}
                   <div>
-                    <label className="block text-sm font-bold text-zinc-900 mb-3">4. ระยะเวลาที่ต้องการรับงาน</label>
+                    <label className="block text-sm font-bold text-zinc-900 mb-3">4. ระยะเวลาที่ต้องการรับงาน <span className="text-red-500">*</span></label>
                     <div className="relative">
-                      
-                      {/* กล่องปุ่มกดจำลอง */}
                       <div 
                         onClick={() => setIsTimelineOpen(!isTimelineOpen)}
                         className={`w-full p-4 bg-zinc-50 border rounded-xl cursor-pointer flex justify-between items-center transition-all duration-200 ${
@@ -319,12 +348,10 @@ export default function NewProjectPage() {
                         <ChevronDown size={16} className={`text-zinc-400 transition-transform duration-300 ${isTimelineOpen ? 'rotate-180' : ''}`} />
                       </div>
                       
-                      {/* เมนูที่กางลงมา */}
                       <AnimatePresence>
                         {isTimelineOpen && (
                           <>
                             <div className="fixed inset-0 z-40" onClick={() => setIsTimelineOpen(false)} />
-                            
                             <motion.div 
                               initial={{ opacity: 0, y: -10, scale: 0.95 }}
                               animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -354,8 +381,7 @@ export default function NewProjectPage() {
                           </>
                         )}
                       </AnimatePresence>
-                      
-                      {/* ซ่อน input ไว้เพื่อทำ Required Validation สำหรับ Custom Dropdown */}
+                      {/* ซ่อน input ไว้เพื่อบังคับกรอก */}
                       <input type="text" readOnly required value={timeline} className="opacity-0 absolute w-px h-px pointer-events-none -z-10" tabIndex={-1} />
                     </div>
                   </div>
@@ -363,7 +389,7 @@ export default function NewProjectPage() {
 
                 {/* 5. รายละเอียดงาน */}
                 <div>
-                  <label className="block text-sm font-bold text-zinc-900 mb-3">5. รายละเอียดโปรเจค (Brief)</label>
+                  <label className="block text-sm font-bold text-zinc-900 mb-3">5. รายละเอียดโปรเจค (Brief) <span className="text-red-500">*</span></label>
                   <textarea 
                     rows={5} 
                     value={brief}
@@ -374,51 +400,59 @@ export default function NewProjectPage() {
                   ></textarea>
                 </div>
 
-                {/* 6. วันนัดหมาย */}
+                {/* 6. วันนัดหมาย (บังคับกรอก) */}
                 <div className="relative">
-                  <label className="block text-sm font-bold text-zinc-900 mb-3">6. วันที่สะดวกคุยรายละเอียดเบื้องต้น (ถ้ามี)</label>
+                  <label className="block text-sm font-bold text-zinc-900 mb-3">6. วันที่สะดวกคุยรายละเอียดเบื้องต้น <span className="text-red-500">*</span></label>
                   
                   <button 
                     type="button" 
                     onClick={() => setIsCalendarOpen(!isCalendarOpen)}
-                    className="w-full flex items-center p-4 bg-white border border-zinc-200 rounded-xl hover:bg-zinc-50 hover:border-zinc-300 transition text-sm text-left relative"
+                    className={`w-full flex items-center p-4 bg-white border transition text-sm text-left relative rounded-xl ${
+                      isCalendarOpen ? 'border-black ring-2 ring-black' : 'border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300'
+                    }`}
                   >
                     <Calendar className="absolute left-4 text-zinc-400" size={18} />
                     <span className={`ml-8 ${bookingDate ? "font-medium text-black" : "text-zinc-500"}`}>
                       {bookingDate ? bookingDate : "คลิกเพื่อเลือกวันที่สะดวก..."}
                     </span>
                   </button>
+                  
+                  {/* ซ่อน input เพื่อใช้ระบบ Validation แจ้งเตือนถ้าผู้ใช้ไม่ยอมเลือก */}
+                  <input type="text" readOnly required value={bookingDate} className="opacity-0 absolute w-px h-px pointer-events-none -z-10" tabIndex={-1} />
 
                   <p className="text-xs text-zinc-500 mt-2 ml-1">วันที่เป็นสีเทาคือวันหยุดหรือคิวเต็ม กรุณาเลือกวันอื่นครับ</p>
 
                   <AnimatePresence>
                     {isCalendarOpen && (
-                      <motion.div 
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: 10 }}
-                        className="absolute left-0 top-20 w-full max-w-[340px] bg-white border border-zinc-200 shadow-2xl rounded-2xl p-4 z-50"
-                      >
-                        <div className="flex justify-between items-center mb-4 px-2">
-                          <button type="button" onClick={prevMonth} className="p-1.5 hover:bg-zinc-100 rounded-full transition"><ChevronLeft size={18} /></button>
-                          <span className="font-bold text-sm">
-                            {monthNames[lang][currentMonth.getMonth()]} {lang === 'th' ? currentMonth.getFullYear() + 543 : currentMonth.getFullYear()}
-                          </span>
-                          <button type="button" onClick={nextMonth} className="p-1.5 hover:bg-zinc-100 rounded-full transition"><ChevronRight size={18} /></button>
-                        </div>
-                        <div className="grid grid-cols-7 gap-1 mb-2">
-                          {dayNames[lang].map((day, i) => (
-                            <div key={i} className="text-center text-[11px] font-bold text-zinc-400">{day}</div>
-                          ))}
-                        </div>
-                        <div className="grid grid-cols-7 gap-1">
-                          {renderCalendarDays()}
-                        </div>
-                        <div className="flex items-center gap-4 mt-4 pt-4 border-t border-zinc-100 text-[10px] md:text-xs">
-                          <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-black rounded-full"></div> เลือกแล้ว</div>
-                          <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-zinc-100 border border-zinc-200 rounded-full flex items-center justify-center"><span className="w-full h-px bg-zinc-300 rotate-45"></span></div> คิวเต็ม/วันหยุด</div>
-                        </div>
-                      </motion.div>
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setIsCalendarOpen(false)} />
+                        <motion.div 
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: 10 }}
+                          className="absolute left-0 top-20 w-full max-w-[340px] bg-white border border-zinc-200 shadow-2xl rounded-2xl p-4 z-50"
+                        >
+                          <div className="flex justify-between items-center mb-4 px-2">
+                            <button type="button" onClick={prevMonth} className="p-1.5 hover:bg-zinc-100 rounded-full transition"><ChevronLeft size={18} /></button>
+                            <span className="font-bold text-sm">
+                              {monthNames[lang][currentMonth.getMonth()]} {lang === 'th' ? currentMonth.getFullYear() + 543 : currentMonth.getFullYear()}
+                            </span>
+                            <button type="button" onClick={nextMonth} className="p-1.5 hover:bg-zinc-100 rounded-full transition"><ChevronRight size={18} /></button>
+                          </div>
+                          <div className="grid grid-cols-7 gap-1 mb-2">
+                            {dayNames[lang].map((day, i) => (
+                              <div key={i} className="text-center text-[11px] font-bold text-zinc-400">{day}</div>
+                            ))}
+                          </div>
+                          <div className="grid grid-cols-7 gap-1">
+                            {renderCalendarDays()}
+                          </div>
+                          <div className="flex items-center gap-4 mt-4 pt-4 border-t border-zinc-100 text-[10px] md:text-xs">
+                            <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-black rounded-full"></div> เลือกแล้ว</div>
+                            <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-zinc-100 border border-zinc-200 rounded-full flex items-center justify-center"><span className="w-full h-px bg-zinc-300 rotate-45"></span></div> คิวเต็ม/วันหยุด</div>
+                          </div>
+                        </motion.div>
+                      </>
                     )}
                   </AnimatePresence>
                 </div>
@@ -446,7 +480,7 @@ export default function NewProjectPage() {
                   </button>
                 </div>
 
-                {/* 8. ข้อมูลสำหรับออกเอกสาร (Auto-save) */}
+                {/* 8. ข้อมูลสำหรับออกเอกสาร */}
                 <div className="bg-blue-50/50 p-6 rounded-2xl border border-blue-100 space-y-4 relative overflow-hidden">
                   <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-50 rounded-full blur-3xl -translate-y-1/2 translate-x-1/4"></div>
                   <div className="relative z-10">
@@ -461,7 +495,7 @@ export default function NewProjectPage() {
                     
                     <div className="space-y-4">
                       <div>
-                        <label className="block text-[11px] font-bold text-blue-800 mb-2 uppercase tracking-wider">ที่อยู่บริษัท / ที่อยู่สำหรับออกบิล</label>
+                        <label className="block text-[11px] font-bold text-blue-800 mb-2 uppercase tracking-wider">ที่อยู่บริษัท / ที่อยู่สำหรับออกบิล <span className="text-red-500">*</span></label>
                         <textarea 
                           value={billingAddress}
                           onChange={(e) => setBillingAddress(e.target.value)}
@@ -473,7 +507,7 @@ export default function NewProjectPage() {
                       </div>
 
                       <div>
-                        <label className="block text-[11px] font-bold text-blue-800 mb-2 uppercase tracking-wider">เลขประจำตัวผู้เสียภาษี / เลขบัตรประชาชน</label>
+                        <label className="block text-[11px] font-bold text-blue-800 mb-2 uppercase tracking-wider">เลขประจำตัวผู้เสียภาษี / เลขบัตรประชาชน <span className="text-red-500">*</span></label>
                         <input 
                           type="text" 
                           value={taxId}

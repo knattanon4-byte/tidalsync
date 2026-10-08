@@ -42,11 +42,12 @@ export default function AdminProjects() {
   const fetchProjects = async () => {
     setIsLoading(true);
     try {
+      // 🌟 แก้ไข: ดึงข้อมูลจากตาราง inquiries (ตารางหลักที่เก็บคำขอโปรเจกต์)
       const { data, error } = await supabase
-        .from('projects')
+        .from('inquiries')
         .select(`
           *,
-          profiles:client_id (full_name, company_name)
+          profiles:user_id (full_name, company_name)
         `)
         .order('created_at', { ascending: false });
 
@@ -75,16 +76,18 @@ export default function AdminProjects() {
     e.preventDefault();
     setIsCreating(true);
     try {
+      // 🌟 แก้ไข: บันทึกข้อมูลลงตาราง inquiries และจับคู่คอลัมน์ให้ถูกต้อง
       const { error } = await supabase
-        .from('projects')
+        .from('inquiries')
         .insert([{
-          title: newProject.title,
-          client_id: newProject.client_id,
-          type: newProject.type,
+          project_name: newProject.title,
+          user_id: newProject.client_id, // ใช้ user_id ตามตาราง inquiries
+          project_type: newProject.type,
           budget: newProject.budget ? Number(newProject.budget) : 0,
-          description: newProject.description,
+          brief: newProject.description, // ใช้ brief ตามหน้าแชท
           status: newProject.status,
-          progress: newProject.progress
+          progress: newProject.progress,
+          due_date: newProject.due_date
         }]);
 
       if (error) throw error;
@@ -132,8 +135,8 @@ export default function AdminProjects() {
           <div className="w-full flex justify-center items-center"><Loader2 className="animate-spin text-zinc-400" size={32}/></div>
         ) : (
           <>
-            <KanbanColumn title="รอประเมิน (New)" count={projects.filter(p => p.status === "pending").length} color="border-zinc-300 bg-zinc-50/50">
-              {projects.filter(p => p.status === "pending").map(p => <ProjectCard key={p.id} project={p} getClientName={getClientName} />)}
+            <KanbanColumn title="รอประเมิน (New)" count={projects.filter(p => !p.status || p.status === "pending").length} color="border-zinc-300 bg-zinc-50/50">
+              {projects.filter(p => !p.status || p.status === "pending").map(p => <ProjectCard key={p.id} project={p} getClientName={getClientName} />)}
             </KanbanColumn>
             <KanbanColumn title="กำลังพัฒนา (In Progress)" count={projects.filter(p => p.status === "inProgress").length} color="border-black">
               {projects.filter(p => p.status === "inProgress").map(p => <ProjectCard key={p.id} project={p} getClientName={getClientName} />)}
@@ -260,11 +263,12 @@ function ProjectCard({ project, getClientName }: { project: any, getClientName: 
 
   return (
     <motion.div 
-      onClick={() => router.push(`/admin/chat/${project.client_id}`)}
+      // 🌟 แก้ไข: ให้กดแล้วเด้งไปที่ /admin/chat/รหัสโปรเจกต์ (project.id) แทนที่จะเป็น client_id
+      onClick={() => router.push(`/admin/chat/${project.id}`)}
       whileHover={{ y: -2 }}
-      className={`relative bg-white p-4 rounded-xl border shadow-sm hover:shadow-md transition cursor-pointer group flex flex-col gap-3 ${project.status === 'pending' ? 'border-zinc-300' : 'border-zinc-200 hover:border-black'}`}
+      className={`relative bg-white p-4 rounded-xl border shadow-sm hover:shadow-md transition cursor-pointer group flex flex-col gap-3 ${!project.status || project.status === 'pending' ? 'border-zinc-300' : 'border-zinc-200 hover:border-black'}`}
     >
-      {project.status === 'pending' && (
+      {(!project.status || project.status === 'pending') && (
         <span className="absolute -top-2 -right-2 bg-red-500 text-white text-[9px] font-bold px-2.5 py-1 rounded-full shadow-md animate-bounce">
           NEW REQUEST
         </span>
@@ -272,29 +276,31 @@ function ProjectCard({ project, getClientName }: { project: any, getClientName: 
 
       <div className="flex justify-between items-start">
         <div className="flex flex-wrap gap-1 mb-1">
-            <span className={`px-2 py-0.5 text-[9px] font-bold rounded-md uppercase tracking-wider ${getTagColor(project.type)}`}>
-              {project.type || 'Project'}
+            {/* 🌟 แก้ไข: แมปปิ้งตัวแปร project.project_type */}
+            <span className={`px-2 py-0.5 text-[9px] font-bold rounded-md uppercase tracking-wider ${getTagColor(project.project_type)}`}>
+              {project.project_type || 'Project'}
             </span>
         </div>
       </div>
 
       <div>
-        <h4 className="font-bold text-zinc-900 leading-tight group-hover:text-blue-600 transition pr-4">{project.title}</h4>
+        {/* 🌟 แก้ไข: แมปปิ้งตัวแปร project.project_name */}
+        <h4 className="font-bold text-zinc-900 leading-tight group-hover:text-blue-600 transition pr-4">{project.project_name}</h4>
         <p className="text-[11px] text-zinc-500 mt-1 flex items-center gap-1.5"><Users size={12}/> {getClientName(project)}</p>
       </div>
 
       <div className="pt-2 border-t border-zinc-100">
         <div className="flex justify-between items-center text-[10px] mb-1.5 font-medium">
-          <span className={`flex items-center gap-1 ${project.status === 'pending' ? 'text-orange-500 font-bold' : 'text-zinc-500'}`}>
-            {project.status === 'pending' ? <Calendar size={12}/> : <Clock size={12}/>} 
+          <span className={`flex items-center gap-1 ${!project.status || project.status === 'pending' ? 'text-orange-500 font-bold' : 'text-zinc-500'}`}>
+            {!project.status || project.status === 'pending' ? <Calendar size={12}/> : <Clock size={12}/>} 
             {project.due_date || 'รอประเมิน'}
           </span>
           <span className="text-black font-bold">{project.progress || 0}%</span>
         </div>
         <div className="w-full bg-zinc-100 rounded-full h-1.5 overflow-hidden">
           <div 
-            className={`h-1.5 rounded-full ${project.progress === 100 ? 'bg-green-500' : project.progress === 0 ? 'bg-zinc-300' : 'bg-black'}`} 
-            style={{ width: project.progress === 0 ? '100%' : `${project.progress}%` }}
+            className={`h-1.5 rounded-full ${project.progress === 100 ? 'bg-green-500' : project.progress === 0 || !project.progress ? 'bg-zinc-300' : 'bg-black'}`} 
+            style={{ width: project.progress === 0 || !project.progress ? '100%' : `${project.progress}%` }}
           ></div>
         </div>
       </div>

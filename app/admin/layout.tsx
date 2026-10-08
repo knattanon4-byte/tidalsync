@@ -16,6 +16,12 @@ export default function AdminLayout({
 }) {
   const pathname = usePathname(); // ตัวเช็กว่าตอนนี้อยู่หน้า URL ไหน
 
+  // ================= 🌟 เพิ่มเงื่อนไขซ่อนเมนูตรงนี้ครับ 🌟 =================
+  if (pathname === "/admin/login") {
+    return <>{children}</>; // ถ้าเป็นหน้า Login ให้โยนเนื้อหาล้วนๆ ออกไปเลย ไม่ต้องมีกรอบเมนู
+  }
+  // =================================================================
+
   return (
     <div className="min-h-screen bg-zinc-100/50 text-zinc-900 flex flex-col md:flex-row font-sans relative print:bg-white print:block">
       
