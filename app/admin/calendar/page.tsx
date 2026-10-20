@@ -6,9 +6,11 @@ import {
   Calendar as CalendarIcon, Clock, MapPin, Video, 
   Users, AlignLeft, X, ChevronRight, FileText, 
   Edit2, Check, Send, ExternalLink, Loader2,
-  CheckCircle2, AlertCircle, Plus
+  CheckCircle2, AlertCircle, Plus, Lock, Briefcase, Unlock
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { startOfDay, isSameDay, format, isBefore, endOfDay } from "date-fns";
+import { th } from "date-fns/locale";
 
 const colorMap: Record<string, { bg: string, text: string, border: string }> = {
   blue: { bg: "bg-blue-500", text: "text-white", border: "border-blue-100" },
@@ -28,17 +30,16 @@ export default function AdminCalendarPage() {
   const [selectedDate, setSelectedDate] = useState<number | null>(null);
   
   const [appointments, setAppointments] = useState<any[]>([]);
-  const [clientList, setClientList] = useState<any[]>([]); // 🌟 เก็บรายชื่อลูกค้าจาก Database
+  const [clientList, setClientList] = useState<any[]>([]); 
+  const [lockedDates, setLockedDates] = useState<any[]>([]);
+  const [projectDates, setProjectDates] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   
-  // State สำหรับ Modal ดูนัดหมาย
   const [selectedEvent, setSelectedEvent] = useState<any | null>(null);
   const [isEditingLink, setIsEditingLink] = useState(false);
   const [linkInput, setLinkInput] = useState("");
   const [isSaving, setIsSaving] = useState(false);
-  const [isSendingChat, setIsSendingChat] = useState(false);
 
-  // 🌟 State สำหรับ Modal "สร้างนัดหมายใหม่"
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [newApp, setNewApp] = useState({
     title: "", date: "", time: "", client_id: "", client_name: "", type: "online", location: "Google Meet", color: "blue", agenda: "", link: ""
@@ -52,7 +53,6 @@ export default function AdminCalendarPage() {
     setTimeout(() => setToast(prev => ({ ...prev, show: false })), 3000);
   };
 
-  // 🌟 ฟังก์ชันดึงรายชื่อลูกค้า (Profiles) จาก Database มาทำ Dropdown
   const fetchClients = async () => {
     try {
       const { data, error } = await supabase.from('profiles').select('id, full_name, company_name');
@@ -63,17 +63,28 @@ export default function AdminCalendarPage() {
     }
   };
 
-  const fetchAppointments = async () => {
+  const fetchAllCalendarData = async () => {
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.from('appointments').select('*').order('date', { ascending: true });
-      if (error) throw error;
+      const { data: appData, error: appError } = await supabase.from('appointments').select('*').order('date', { ascending: true });
+      if (appError) throw appError;
+      if (appData) {
+        const formattedData = appData.map(app => {
+          const d = new Date(app.date);
+          return { ...app, dayNumber: d.getDate(), monthNumber: d.getMonth(), yearNumber: d.getFullYear() };
+        });
+        setAppointments(formattedData);
+      }
 
-      const formattedData = data.map(app => {
-        const d = new Date(app.date);
-        return { ...app, dayNumber: d.getDate(), monthNumber: d.getMonth(), yearNumber: d.getFullYear() };
-      });
-      setAppointments(formattedData);
+      const { data: lockData } = await supabase.from('locked_dates').select('*');
+      if (lockData) setLockedDates(lockData);
+
+      const { data: projData } = await supabase
+        .from('inquiries')
+        .select('id, project_name, created_at')
+        .not('status', 'ilike', '%เสร็จ%');
+      if (projData) setProjectDates(projData);
+
     } catch (error: any) {
       console.error(error);
     } finally {
@@ -82,9 +93,9 @@ export default function AdminCalendarPage() {
   };
 
   useEffect(() => {
-    fetchAppointments();
-    fetchClients(); // 🌟 สั่งให้ดึงลูกค้าตอนเปิดหน้าเว็บ
-  }, []);
+    fetchAllCalendarData();
+    fetchClients(); 
+  }, [currentDate]);
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
@@ -97,11 +108,83 @@ export default function AdminCalendarPage() {
   const appointmentsThisMonth = appointments.filter(app => app.yearNumber === year && app.monthNumber === month);
   const filteredAppointments = selectedDate ? appointmentsThisMonth.filter(app => app.dayNumber === selectedDate) : appointmentsThisMonth;
 
+  const getDateString = (d: number) => `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+
+  const isDateBooked = (day: number) => {
+    const targetDateStr = getDateString(day);
+    const checkDate = new Date(year, month, day);
+    
+    const isLocked = lockedDates.some(ld => ld.date && ld.date.startsWith(targetDateStr));
+    if (isLocked) return true;
+    
+    const hasProjectQueue = projectDates.some(proj => proj.created_at && isSameDay(new Date(proj.created_at), checkDate));
+    if (hasProjectQueue) return true;
+    
+    const hasAppointment = appointmentsThisMonth.some(app => app.dayNumber === day);
+    if (hasAppointment) return true;
+    
+    return false;
+  };
+
+  // 🌟 ฟังก์ชันเช็กว่าวันที่นั้นเป็น "อดีต" ไปแล้วหรือยัง
+  const isPastDate = (day: number) => {
+    const checkDate = endOfDay(new Date(year, month, day)); 
+    return isBefore(checkDate, new Date());
+  };
+
+  const toggleLockDate = async () => {
+    if (!selectedDate) return;
+    const targetDateStr = getDateString(selectedDate);
+    const existingLock = lockedDates.find(ld => ld.date && ld.date.startsWith(targetDateStr));
+
+    try {
+      if (existingLock) {
+        setLockedDates(prev => prev.filter(ld => ld.id !== existingLock.id));
+        const { error } = await supabase.from('locked_dates').delete().eq('id', existingLock.id);
+        if (error) throw error; 
+        showToast("ปลดล็อกคิวเรียบร้อย", "success");
+      } else {
+        const tempId = Date.now().toString();
+        setLockedDates(prev => [...prev, { id: tempId, date: targetDateStr, reason: 'ปิดรับคิว (Manual)' }]);
+        const { error } = await supabase.from('locked_dates').insert([{ date: targetDateStr, reason: 'ปิดรับคิว (Manual)' }]);
+        if (error) throw error; 
+        showToast("ล็อกคิววันนี้เรียบร้อย", "success");
+      }
+    } catch (error: any) {
+      showToast("DB Error: " + error.message, "error");
+      fetchAllCalendarData(); 
+    }
+  };
+
+  const handleQuickLockToggle = async (day: number, e: React.MouseEvent) => {
+    e.stopPropagation(); 
+    const targetDateStr = getDateString(day);
+    const existingLock = lockedDates.find(ld => ld.date && ld.date.startsWith(targetDateStr));
+
+    try {
+      if (existingLock) {
+        setLockedDates(prev => prev.filter(ld => ld.id !== existingLock.id));
+        const { error } = await supabase.from('locked_dates').delete().eq('id', existingLock.id);
+        if (error) throw error; 
+        showToast("ปลดล็อกคิวเรียบร้อย", "success");
+      } else {
+        const tempId = Date.now().toString();
+        setLockedDates(prev => [...prev, { id: tempId, date: targetDateStr, reason: 'ปิดรับคิว (Manual)' }]);
+        const { error } = await supabase.from('locked_dates').insert([{ date: targetDateStr, reason: 'ปิดรับคิว (Manual)' }]);
+        if (error) throw error; 
+        showToast("ล็อกคิววันนี้เรียบร้อย", "success");
+      }
+    } catch (error: any) {
+      showToast("DB Error: " + error.message, "error");
+      fetchAllCalendarData();
+    }
+  };
+
   const handleCreateAppointment = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsCreating(true);
     try {
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('appointments')
         .insert([{
           title: newApp.title,
@@ -113,17 +196,15 @@ export default function AdminCalendarPage() {
           color: newApp.color,
           agenda: newApp.agenda,
           link: newApp.link
-        }])
-        .select()
-        .single();
+        }]);
 
       if (error) throw error;
 
-      showToast("สร้างนัดหมายและเตรียมส่งแชทเรียบร้อย!", "success");
+      showToast("สร้างนัดหมายเรียบร้อย!", "success");
       setIsAddModalOpen(false);
       setNewApp({ title: "", date: "", time: "", client_id: "", client_name: "", type: "online", location: "Google Meet", color: "blue", agenda: "", link: "" });
       
-      fetchAppointments();
+      fetchAllCalendarData();
     } catch (error: any) {
       showToast("สร้างนัดหมายไม่สำเร็จ: " + error.message, "error");
     } finally {
@@ -137,7 +218,7 @@ export default function AdminCalendarPage() {
       const { error } = await supabase.from('appointments').update({ link: linkInput }).eq('id', selectedEvent.id);
       if (error) throw error;
       setSelectedEvent({ ...selectedEvent, link: linkInput });
-      setAppointments(prev => prev.map(app => app.id === selectedEvent.id ? { ...app, link: linkInput } : app));
+      fetchAllCalendarData();
       setIsEditingLink(false);
       showToast("บันทึกลิงก์ Google Meet สำเร็จ", "success");
     } catch (error: any) {
@@ -150,7 +231,6 @@ export default function AdminCalendarPage() {
   return (
     <div className="flex h-screen bg-zinc-50 overflow-hidden font-sans relative">
       
-      {/* Toast */}
       <AnimatePresence>
         {toast.show && (
           <motion.div
@@ -163,14 +243,13 @@ export default function AdminCalendarPage() {
         )}
       </AnimatePresence>
 
-      {/* Panel ซ้าย: รายการนัดหมาย */}
       <div className="w-full md:w-[380px] bg-white border-r border-zinc-100 flex flex-col h-full z-10 shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
         <div className="p-6 border-b border-zinc-100 flex items-center justify-between">
           <h2 className="text-lg font-bold text-zinc-900 flex items-center gap-2">
             <Clock size={20} className="text-zinc-400" /> 
             {selectedDate ? `วันที่ ${selectedDate} ${monthName}` : `นัดหมายของเดือนนี้`}
           </h2>
-          {selectedDate && (
+          {selectedDate && filteredAppointments.length > 0 && (
             <span className="text-xs font-bold bg-blue-50 text-blue-600 px-2 py-1 rounded-md">
               {filteredAppointments.length} รายการ
             </span>
@@ -205,24 +284,57 @@ export default function AdminCalendarPage() {
               ) : (
                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-10 text-zinc-400">
                   <CalendarIcon size={40} className="mx-auto mb-3 opacity-20" />
-                  <p className="text-sm">ไม่มีนัดหมาย</p>
+                  <p className="text-sm">ไม่มีนัดหมายในระบบ</p>
                 </motion.div>
               )}
             </AnimatePresence>
+          )}
+
+          {selectedDate && (
+             <div className="mt-4 pt-4 border-t border-zinc-100">
+                {isPastDate(selectedDate) ? (
+                   // 🌟 ถ้าเป็นวันในอดีต ซ่อนปุ่มล็อค
+                   <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-2xl flex flex-col gap-3 opacity-60">
+                      <div className="flex items-center gap-2 text-zinc-500 font-bold text-sm">
+                         <Clock size={16} /> วันนี้ผ่านไปแล้ว
+                      </div>
+                   </div>
+                ) : isDateBooked(selectedDate) ? (
+                   <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-2xl flex flex-col gap-3">
+                      <div className="flex items-center gap-2 text-red-500 font-bold text-sm">
+                         <Lock size={16} /> คิวเต็มแล้ว / ปิดรับคิว
+                      </div>
+                      <button onClick={toggleLockDate} className="w-full py-2 bg-white border border-red-200 text-red-500 rounded-xl text-xs font-bold hover:bg-red-50 transition">
+                         ปลดล็อกคิวนี้
+                      </button>
+                   </div>
+                ) : (
+                   <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-2xl flex flex-col gap-3">
+                      <div className="flex items-center gap-2 text-green-500 font-bold text-sm">
+                         <CheckCircle2 size={16} /> ว่างรับคิวได้
+                      </div>
+                      <button onClick={toggleLockDate} className="w-full py-2 bg-black text-white rounded-xl text-xs font-bold hover:bg-zinc-800 transition">
+                         บล็อกรับคิว 1 วัน (Manual)
+                      </button>
+                   </div>
+                )}
+             </div>
           )}
         </div>
 
         <div className="p-6 border-t border-zinc-100 bg-zinc-50/50">
           <button 
-            onClick={() => setSelectedDate(null)}
-            className={`w-full py-3.5 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 ${selectedDate === null ? "bg-zinc-200 text-zinc-500 cursor-default" : "bg-white border border-zinc-200 text-black hover:bg-zinc-100 shadow-sm"}`}
+            onClick={() => {
+               setCurrentDate(new Date()); // กลับไปเดือนปัจจุบัน
+               setSelectedDate(null);
+            }}
+            className="w-full py-3.5 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 bg-white border border-zinc-200 text-black hover:bg-zinc-100 shadow-sm"
           >
-            <CalendarIcon size={16} /> ดูนัดหมายทั้งหมดในเดือนนี้
+            <CalendarIcon size={16} /> กลับไปเดือนปัจจุบัน
           </button>
         </div>
       </div>
 
-      {/* Panel ขวา: ปฏิทิน */}
       <div className="flex-1 p-8 md:p-12 overflow-y-auto bg-zinc-50">
         <div className="max-w-4xl mx-auto bg-white rounded-3xl border border-zinc-100 shadow-sm p-8">
           
@@ -252,21 +364,78 @@ export default function AdminCalendarPage() {
             {blanks.map((_, i) => <div key={`blank-${i}`} className="bg-white/50 min-h-[120px] p-2"></div>)}
             {days.map(day => {
               const dayEvents = appointmentsThisMonth.filter(app => app.dayNumber === day);
+              const checkDate = new Date(year, month, day);
+              
+              const currentDayStr = getDateString(day);
+              const hasProjectQueue = projectDates.some(proj => proj.created_at && isSameDay(new Date(proj.created_at), checkDate));
+              const isLockedManual = lockedDates.some(ld => ld.date && ld.date.startsWith(currentDayStr));
+              const hasAppointment = dayEvents.length > 0;
+              
+              const isAutoBooked = hasProjectQueue || hasAppointment;
+              const booked = isAutoBooked || isLockedManual; 
               const isSelected = selectedDate === day;
+              
+              // 🌟 เช็กว่าเป็นอดีตไหม
+              const isPast = isPastDate(day);
+
               return (
                 <div 
                   key={day} onClick={() => setSelectedDate(day)}
-                  className={`bg-white min-h-[120px] p-2 border-t border-zinc-50 transition-colors cursor-pointer relative group ${isSelected ? 'ring-2 ring-inset ring-black bg-zinc-50/50' : 'hover:bg-zinc-50'}`}
+                  className={`bg-white min-h-[120px] p-2 border-t border-zinc-50 transition-colors cursor-pointer relative group 
+                    ${isSelected ? 'ring-2 ring-inset ring-black bg-zinc-50/50' : 'hover:bg-zinc-50'}
+                    ${booked && !isSelected && !isPast ? 'bg-zinc-50/80 grayscale-[30%]' : ''}
+                    ${isPast ? 'bg-zinc-50/50 opacity-50 cursor-not-allowed' : ''} 
+                  `}
                 >
                   <div className="flex justify-between items-start">
-                    <span className={`w-7 h-7 flex items-center justify-center rounded-full text-sm font-bold ${isSelected ? 'bg-black text-white' : dayEvents.length > 0 ? 'text-black' : 'text-zinc-400'}`}>{day}</span>
+                    <span className={`w-7 h-7 flex items-center justify-center rounded-full text-sm font-bold ${isSelected ? 'bg-black text-white' : booked || isPast ? 'text-zinc-400' : 'text-black'}`}>
+                      {day}
+                    </span>
+                    
+                    {/* 🌟 ซ่อนปุ่มล็อคถ้าเป็นอดีตไปแล้ว */}
+                    {!isAutoBooked && !isPast && (
+                       <button 
+                         onClick={(e) => handleQuickLockToggle(day, e)}
+                         className={`p-1.5 rounded-lg transition-all duration-300 ${
+                           isLockedManual 
+                           ? 'text-white bg-red-500 hover:bg-red-600 opacity-100 shadow-md scale-105' 
+                           : 'text-zinc-300 hover:text-zinc-800 hover:bg-zinc-200 opacity-0 group-hover:opacity-100'
+                         }`}
+                         title={isLockedManual ? "คลิกเพื่อปลดล็อกวัน" : "คลิกเพื่อล็อกวัน (ไม่รับคิว)"}
+                       >
+                         <AnimatePresence mode="wait">
+                           {isLockedManual ? (
+                             <motion.div key="locked" initial={{ scale: 0.5, rotate: -45 }} animate={{ scale: 1, rotate: 0 }} exit={{ scale: 0.5, opacity: 0 }} transition={{ duration: 0.2 }}>
+                               <Lock size={14} />
+                             </motion.div>
+                           ) : (
+                             <motion.div key="unlocked" initial={{ scale: 0.5, rotate: 45 }} animate={{ scale: 1, rotate: 0 }} exit={{ scale: 0.5, opacity: 0 }} transition={{ duration: 0.2 }}>
+                               <Unlock size={14} />
+                             </motion.div>
+                           )}
+                         </AnimatePresence>
+                       </button>
+                    )}
                   </div>
-                  <div className="mt-2 space-y-1.5">
+                  
+                  <div className="mt-2 space-y-1.5 flex flex-col justify-end h-full">
                     {dayEvents.map(event => (
                       <div key={event.id} className={`text-[10px] font-bold px-2 py-1 rounded-md truncate ${colorMap[event.color]?.bg || 'bg-blue-500'} ${colorMap[event.color]?.text || 'text-white'}`}>
                         {event.time.split(' ')[0]} {event.title}
                       </div>
                     ))}
+                    
+                    {hasProjectQueue && (
+                      <div className="text-[10px] font-bold px-2 py-1 rounded-md bg-orange-500 text-white truncate shadow-sm flex items-center gap-1">
+                        <Briefcase size={10} /> คิวโปรเจกต์
+                      </div>
+                    )}
+                    
+                    {isLockedManual && (
+                      <div className="text-[10px] font-bold px-2 py-1 rounded-md bg-red-500 text-white truncate shadow-sm flex items-center gap-1">
+                        <Lock size={10} /> ปิดรับคิว
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -275,7 +444,6 @@ export default function AdminCalendarPage() {
         </div>
       </div>
 
-      {/* 🌟 Modal: สร้างนัดหมายใหม่ */}
       <AnimatePresence>
         {isAddModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -286,6 +454,12 @@ export default function AdminCalendarPage() {
                 <button onClick={() => setIsAddModalOpen(false)} className="w-8 h-8 bg-zinc-200/50 hover:bg-zinc-200 rounded-full flex items-center justify-center transition"><X size={16} /></button>
               </div>
               <form onSubmit={handleCreateAppointment} className="p-6 space-y-4 overflow-y-auto">
+                {newApp.date && isDateBooked(parseInt(newApp.date.split('-')[2])) && (
+                  <div className="p-3 bg-red-50 text-red-500 rounded-xl text-xs font-bold flex items-center gap-2">
+                    <AlertCircle size={16} /> วันที่เลือกคิวเต็มแล้ว (ระบบรับแค่ 1 เคส/วัน) แต่ยังสามารถฝืนบันทึกได้ครับ
+                  </div>
+                )}
+                
                 <div>
                   <label className="block text-xs font-bold text-zinc-700 mb-1">หัวข้อการประชุม / นัดหมาย *</label>
                   <input type="text" required value={newApp.title} onChange={e => setNewApp({...newApp, title: e.target.value})} className="w-full px-4 py-3 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-black text-sm" placeholder="เช่น ส่งมอบโปรเจกต์ เฟส 1" />
@@ -301,7 +475,6 @@ export default function AdminCalendarPage() {
                   </div>
                 </div>
                 
-                {/* 🌟 เปลี่ยนช่องใส่ชื่อลูกค้าเป็น Dropdown (ดึงจากตาราง Profiles) 🌟 */}
                 <div>
                   <label className="block text-xs font-bold text-zinc-700 mb-1">เลือกลูกค้า / โครงการ *</label>
                   <select 
@@ -312,7 +485,6 @@ export default function AdminCalendarPage() {
                       setNewApp({
                         ...newApp, 
                         client_id: e.target.value,
-                        // เซฟชื่อไว้โชว์บนปฏิทินด้วย
                         client_name: selectedClient ? (selectedClient.company_name || selectedClient.full_name) : ""
                       });
                     }} 
@@ -372,21 +544,18 @@ export default function AdminCalendarPage() {
         )}
       </AnimatePresence>
 
-      {/* Modal ดูรายละเอียดนัดหมาย */}
       <AnimatePresence>
         {selectedEvent && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setSelectedEvent(null)} className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
             <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }} className="bg-white w-full max-w-lg rounded-3xl shadow-2xl relative z-10 overflow-hidden flex flex-col max-h-[90vh]">
-              {/* Header */}
               <div className={`${colorMap[selectedEvent.color]?.bg || 'bg-blue-500'} px-8 py-6 text-white relative shrink-0`}>
                 <button onClick={() => setSelectedEvent(null)} className="absolute top-6 right-6 w-8 h-8 bg-black/10 hover:bg-black/20 rounded-full flex items-center justify-center transition"><X size={18} /></button>
                 <div className="flex items-center gap-2 text-sm font-bold opacity-80 mb-2">
-                  <CalendarIcon size={16} /> {selectedEvent.dayNumber} {monthName} {year} • {selectedEvent.time}
+                   <CalendarIcon size={16} /> {selectedEvent.dayNumber} {monthName} {year} {selectedEvent.time}
                 </div>
                 <h2 className="text-2xl font-black">{selectedEvent.title}</h2>
               </div>
-              {/* Body */}
               <div className="p-8 space-y-6 overflow-y-auto">
                 <div className="flex items-start gap-4">
                   <div className="w-10 h-10 rounded-full bg-zinc-100 flex items-center justify-center shrink-0"><Users size={18} className="text-zinc-500" /></div>

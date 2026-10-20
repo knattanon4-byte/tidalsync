@@ -45,7 +45,7 @@ export default function AdminChatRoom() {
   const [tempTasks, setTempTasks] = useState([...tasks]);
   const [newTaskInput, setNewTaskInput] = useState("");
   const [isSendNotification, setIsSendNotification] = useState(true);
-  const [overallStatus, setOverallStatus] = useState("รอมัดจำ");
+  const [overallStatus, setOverallStatus] = useState("รอประเมินราคา");
 
   const calculateProgress = (taskList: any[]) => {
     if (taskList.length === 0) return 0;
@@ -53,6 +53,14 @@ export default function AdminChatRoom() {
     return Math.round((completedCount / taskList.length) * 100);
   };
   const currentProgress = calculateProgress(tasks);
+
+  // 🌟 ฟังก์ชันตรวจสอบ UUID
+  const isValidUUID = (id: string) => {
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    return uuidRegex.test(id);
+  };
+
+  const isChatSelected = isValidUUID(projectId);
 
   // ================= ดึงข้อมูล =================
   const fetchInbox = async () => {
@@ -78,12 +86,23 @@ export default function AdminChatRoom() {
   };
 
   const fetchChatData = async () => {
+    if (!isChatSelected) {
+      setIsLoading(false);
+      return; 
+    }
+
     setIsLoading(true);
     try {
       const { data: inquiry, error: inquiryErr } = await supabase.from('inquiries').select(`*, profiles:user_id (full_name, company_name)`).eq('id', projectId).single();
       if (!inquiryErr && inquiry) { 
         setProjectData({ ...inquiry, full_name: inquiry.profiles?.full_name || 'ลูกค้า', company_name: inquiry.profiles?.company_name }); 
-        if (inquiry.status) setOverallStatus(inquiry.status);
+        
+        let dbStatus = inquiry.status || "รอประเมินราคา";
+        if (dbStatus.toLowerCase() === "pending" || dbStatus.toLowerCase() === "new") dbStatus = "รอประเมินราคา";
+        else if (dbStatus.toLowerCase() === "inprogress") dbStatus = "กำลังพัฒนา";
+        else if (dbStatus.toLowerCase() === "completed") dbStatus = "ส่งมอบแล้ว";
+        
+        setOverallStatus(dbStatus);
       }
 
       const { data: msgs, error: msgsErr } = await supabase.from('messages').select('*').eq('project_id', projectId).order('created_at', { ascending: true });
@@ -92,7 +111,11 @@ export default function AdminChatRoom() {
 
       await supabase.from('messages').update({ is_read: true }).eq('project_id', projectId).eq('sender', 'client').eq('is_read', false);
       setChatInbox(prev => prev.map(c => c.id === projectId ? { ...c, unread_count: 0 } : c));
-    } catch (error) { console.error("Error fetching chat data:", error); } finally { setIsLoading(false); }
+    } catch (error: any) { 
+      console.error("Error fetching chat data:", error.message || error); 
+    } finally { 
+      setIsLoading(false); 
+    }
   };
 
   useEffect(() => {
@@ -101,7 +124,7 @@ export default function AdminChatRoom() {
   }, [projectId]);
 
   useEffect(() => {
-    if (!projectId) return;
+    if (!projectId || !isChatSelected) return;
     const channel = supabase.channel(`admin-global-messages`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, 
         async (payload) => {
@@ -137,13 +160,17 @@ export default function AdminChatRoom() {
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim()) return;
+    if (!newMessage.trim() || !isChatSelected) return;
     const textToSend = newMessage;
     setNewMessage(""); 
     try { await supabase.from('messages').insert([{ project_id: projectId, sender: 'admin', text: textToSend, type: 'text', is_read: true }]); } catch (error) { console.error("Error sending message:", error); alert("ส่งข้อความไม่สำเร็จ"); }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!isChatSelected) {
+      alert("ไม่สามารถอัปโหลดไฟล์ได้: รหัสโปรเจกต์ไม่ถูกต้อง");
+      return;
+    }
     const file = e.target.files?.[0];
     if (!file) return;
     setIsUploading(true);
@@ -177,19 +204,24 @@ export default function AdminChatRoom() {
   };
 
   const handleSaveBrief = async () => {
+    if (!isChatSelected) return;
     setIsSavingBrief(true);
     try {
-      const { error } = await supabase
+      const { error, data } = await supabase
         .from('inquiries')
         .update({ brief: editingBrief })
-        .eq('id', projectId);
+        .eq('id', projectId)
+        .select();
 
-      if (error) throw error;
+      if (error) {
+        alert("❌ Error จากฐานข้อมูล: " + error.message);
+        throw error;
+      }
       
       setProjectData((prev: any) => ({ ...prev, brief: editingBrief }));
       setIsBriefModalOpen(false);
     } catch (error: any) {
-      alert("บันทึกบรีฟไม่สำเร็จ: " + error.message);
+      console.error(error);
     } finally {
       setIsSavingBrief(false);
     }
@@ -209,52 +241,51 @@ export default function AdminChatRoom() {
   const handleToggleTask = (id: number) => setTempTasks(tempTasks.map(t => t.id === id ? { ...t, completed: !t.completed } : t));
 
   const handleSaveTimeline = async () => {
+    if (!isChatSelected) return;
     const newlyCompleted = tempTasks.filter(temp => temp.completed && !tasks.find(t => t.id === temp.id)?.completed);
     const newProgress = calculateProgress(tempTasks);
     
-    setTasks(tempTasks);
-    setIsTimelineModalOpen(false);
-
     try {
-      await supabase
+      const { error, data } = await supabase
         .from('inquiries')
-        .update({ status: overallStatus, progress: newProgress })
-        .eq('id', projectId);
-    } catch (error) {
+        .update({ status: overallStatus, progress: newProgress }) 
+        .eq('id', projectId)
+        .select();
+
+      if (error) {
+        alert(`❌ ฐานข้อมูลแจ้งเตือน: ${error.message}`);
+        return;
+      } 
+      
+      setTasks(tempTasks);
+      setProjectData((prev: any) => ({ ...prev, status: overallStatus, progress: newProgress }));
+      setIsTimelineModalOpen(false);
+
+      if (isSendNotification) {
+        let updateMsg = "";
+        if (newlyCompleted.length > 0) {
+          const completedTitles = newlyCompleted.map(t => `✅ ${t.title}`).join('\n');
+          updateMsg = `🔔 อัปเดตความคืบหน้า (สถานะ: ${overallStatus} | รวม ${newProgress}%):\n${completedTitles}`;
+        } else {
+          updateMsg = `🔔 อัปเดตสถานะโปรเจค:\nปรับสถานะเป็น "${overallStatus}" (ความคืบหน้ารวม ${newProgress}%)`;
+        }
+        await supabase.from('messages').insert([{ project_id: projectId, sender: 'system', text: updateMsg, type: 'text', is_read: true }]);
+      }
+
+    } catch (error: any) {
+      alert("❌ ระบบขัดข้อง: " + error.message);
       console.error("Error updating project status:", error);
-    }
-
-    if (isSendNotification) {
-      let updateMsg = "";
-
-      if (newlyCompleted.length > 0) {
-        const completedTitles = newlyCompleted.map(t => `✅ ${t.title}`).join('\n');
-        updateMsg = `🔔 อัปเดตความคืบหน้า (สถานะ: ${overallStatus} | รวม ${newProgress}%):\n${completedTitles}`;
-      } else {
-        updateMsg = `🔔 อัปเดตสถานะโปรเจค:\nปรับสถานะเป็น "${overallStatus}" (ความคืบหน้ารวม ${newProgress}%)`;
-      }
-
-      try {
-        await supabase.from('messages').insert([{ 
-          project_id: projectId, 
-          sender: 'system', 
-          text: updateMsg, 
-          type: 'text', 
-          is_read: true 
-        }]);
-      } catch (error) {
-        console.error("Error sending update msg:", error);
-      }
     }
   };
 
   return (
-    <div className="flex-1 flex flex-col md:flex-row h-screen overflow-hidden bg-zinc-50 relative">
+    // 🌟 แก้ไข: ล็อคจอ fixed inset-0 เฉพาะตอนอยู่ห้องแชท (isChatSelected) เท่านั้น
+    <div className={`${isChatSelected ? 'fixed inset-0 z-50' : 'relative flex-1 h-full z-10'} md:relative md:z-auto flex flex-col md:flex-row md:h-screen w-full overflow-hidden bg-zinc-50 min-h-0`}>
       
       {/* ================= แผง Inbox ================= */}
-      <aside className="hidden md:flex w-72 bg-white flex-col border-r border-zinc-200 h-screen shrink-0 z-20">
+      <aside className={`${!isChatSelected ? 'flex w-full' : 'hidden'} md:flex md:w-72 bg-white flex-col border-r border-zinc-200 h-full shrink-0 z-20`}>
         <div className="p-4 border-b border-zinc-100 flex items-center bg-zinc-50">
-          <h2 className="font-bold text-sm text-zinc-800">Inbox</h2>
+          <h2 className="font-bold text-lg text-zinc-900">แชททั้งหมด (Inbox)</h2>
         </div>
         <div className="p-4 border-b border-zinc-100">
           <div className="relative">
@@ -262,7 +293,7 @@ export default function AdminChatRoom() {
             <input type="text" placeholder="ค้นหาชื่อลูกค้า..." className="w-full pl-9 pr-4 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:border-black transition" />
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto pb-6">
           {chatInbox.map((chat) => {
             const isActive = chat.id === projectId;
             const unreadCount = chat.unread_count || 0;
@@ -275,7 +306,7 @@ export default function AdminChatRoom() {
                     <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center text-[9px] font-bold border-2 border-white">{unreadCount}</span>
                   )}
                 </div>
-                <div className="flex-1 min-w-0">
+                <div className="flex-1 min-w-0 mt-0.5">
                   <div className="flex justify-between items-baseline mb-0.5">
                     <h4 className={`text-sm truncate ${unreadCount > 0 && !isActive ? 'font-black text-black' : 'font-bold text-zinc-900'}`}>{chat.full_name}</h4>
                   </div>
@@ -286,19 +317,24 @@ export default function AdminChatRoom() {
               </Link>
             );
           })}
+          {chatInbox.length === 0 && (
+            <div className="text-center text-zinc-400 text-sm mt-10">ยังไม่มีรายชื่อลูกค้า</div>
+          )}
         </div>
       </aside>
 
       {/* ================= ห้องแชท ================= */}
-      <section className="flex-1 flex flex-col h-full relative bg-zinc-50/50">
-        <header className="bg-white px-4 py-4 border-b border-zinc-200 flex items-center justify-between sticky top-0 z-10 shadow-sm">
+      <section className={`${isChatSelected ? 'flex' : 'hidden'} md:flex flex-1 flex-col h-full relative bg-zinc-50/50 min-h-0`}>
+        <header className="bg-white px-4 py-3 md:py-4 border-b border-zinc-200 flex items-center justify-between sticky top-0 z-10 shadow-sm shrink-0">
           <div className="flex items-center gap-3">
-            <Link href="/admin" className="md:hidden p-2 -ml-2 text-zinc-400 hover:text-black transition"><ArrowLeft size={20} /></Link>
-            <div className="w-10 h-10 rounded-full bg-zinc-200 flex items-center justify-center font-bold text-zinc-500">
+            <button onClick={() => router.push('/admin/chat/1')} className="md:hidden p-2 -ml-2 text-zinc-400 hover:text-black transition">
+              <ArrowLeft size={20} />
+            </button>
+            <div className="w-10 h-10 rounded-full bg-zinc-200 flex items-center justify-center font-bold text-zinc-500 hidden md:flex">
               {projectData?.full_name?.charAt(0) || '?'}
             </div>
             <div>
-              <h1 className="text-base font-bold text-zinc-900 leading-tight">
+              <h1 className="text-sm md:text-base font-bold text-zinc-900 leading-tight">
                 {projectData?.full_name || 'Loading...'} {projectData?.company_name ? `(${projectData.company_name})` : ''}
               </h1>
               <div className="flex items-center gap-1.5 mt-0.5">
@@ -307,16 +343,20 @@ export default function AdminChatRoom() {
               </div>
             </div>
           </div>
-          <button className="p-2 text-zinc-400 hover:text-black transition rounded-full hover:bg-zinc-100"><MoreVertical size={20} /></button>
+          <button onClick={() => setIsTimelineModalOpen(true)} className="md:hidden p-2 text-zinc-400 hover:text-black transition rounded-full hover:bg-zinc-100">
+            <MoreVertical size={20} />
+          </button>
         </header>
 
         <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
           <div className="text-center mb-8">
-            <span className="text-[10px] font-bold bg-zinc-200 text-zinc-500 px-3 py-1 rounded-full uppercase tracking-wider">แชทโปรเจกต์: {projectData?.project_name}</span>
+            <span className="text-[10px] font-bold bg-zinc-200 text-zinc-500 px-3 py-1 rounded-full uppercase tracking-wider">แชทโปรเจกต์: {projectData?.project_name || 'ไม่ได้ระบุ'}</span>
           </div>
 
           {isLoading ? (
             <div className="flex justify-center items-center h-full"><Loader2 className="animate-spin text-zinc-400" size={24} /></div>
+          ) : !isChatSelected ? (
+            <div className="hidden md:flex justify-center items-center h-full text-zinc-400 text-sm">เลือกลูกค้าจากรายชื่อทางซ้ายมือเพื่อเริ่มการสนทนาครับ</div>
           ) : messages.length === 0 ? (
             <div className="text-center text-zinc-400 text-sm mt-10">ยังไม่มีข้อความ เริ่มต้นทักทายลูกค้าได้เลยครับ</div>
           ) : (
@@ -339,7 +379,7 @@ export default function AdminChatRoom() {
               return (
                 <motion.div key={msg.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex w-full ${isAdmin ? "justify-end" : "justify-start"}`}>
                   <div className={`flex max-w-[85%] md:max-w-[70%] gap-2 md:gap-3 ${isAdmin ? "flex-row-reverse" : "flex-row"}`}>
-                    <div className="shrink-0 mt-auto">
+                    <div className="shrink-0 mt-auto hidden md:block">
                       {isAdmin ? (
                         <div className="w-8 h-8 rounded-full bg-black flex items-center justify-center shadow-sm"><Image src="/tidalsynclogo.png" alt="Admin" width={20} height={20} className="brightness-0 invert" /></div>
                       ) : (
@@ -348,17 +388,15 @@ export default function AdminChatRoom() {
                     </div>
                     <div className={`flex flex-col ${isAdmin ? "items-end" : "items-start"}`}>
                       {(!msg.type || msg.type === "text") && (
-                        <div className={`px-4 py-3 rounded-2xl text-[14px] md:text-[15px] shadow-sm whitespace-pre-wrap ${isAdmin ? "bg-black text-white rounded-br-sm" : "bg-white border border-zinc-200 text-zinc-800 rounded-bl-sm"}`}>
+                        <div className={`px-4 py-3 rounded-2xl text-[14px] md:text-[15px] shadow-sm whitespace-pre-wrap ${isAdmin ? "bg-black text-white rounded-br-2xl md:rounded-br-sm" : "bg-white border border-zinc-200 text-zinc-800 rounded-bl-2xl md:rounded-bl-sm"}`}>
                           {renderTextWithLinks(msg.text, isAdmin)}
                         </div>
                       )}
                       {msg.type === 'image' && (
-                        <div className={`max-w-[75%] md:max-w-[320px] rounded-2xl overflow-hidden shadow-sm border border-zinc-200 ${isAdmin ? 'rounded-br-sm' : 'rounded-bl-sm'}`}>
+                        <div className={`max-w-[75%] md:max-w-[320px] rounded-2xl overflow-hidden shadow-sm border border-zinc-200 ${isAdmin ? 'rounded-br-2xl md:rounded-br-sm' : 'rounded-bl-2xl md:rounded-bl-sm'}`}>
                           <img src={msg.text} alt="attachment" className="w-full h-auto object-cover cursor-pointer hover:opacity-90 transition" onClick={() => window.open(msg.text, '_blank')} />
                         </div>
                       )}
-                      
-                      {/* 🌟 กล่องเอกสาร (Admin Side) พร้อมระบบบังคับดาวน์โหลด 🌟 */}
                       {msg.type === 'file' && (
                         <div 
                           onClick={() => { 
@@ -394,15 +432,15 @@ export default function AdminChatRoom() {
           <div ref={messagesEndRef} />
         </div>
 
-        <div className="p-4 bg-white border-t border-zinc-200">
+        <div className="p-3 pb-6 md:p-4 md:pb-4 bg-white border-t border-zinc-200 shrink-0">
           <form onSubmit={handleSendMessage} className="relative flex items-end gap-2">
             <input type="file" accept="image/*,application/pdf" hidden ref={fileInputRef} onChange={handleFileUpload} />
-            <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isUploading} className="p-3 text-zinc-400 hover:text-black hover:bg-zinc-100 rounded-full transition shrink-0 disabled:opacity-50" title="แนบไฟล์ (รูปภาพ หรือ PDF)">
+            <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isUploading || !isChatSelected} className="p-3 text-zinc-400 hover:text-black hover:bg-zinc-100 rounded-full transition shrink-0 disabled:opacity-50" title="แนบไฟล์ (รูปภาพ หรือ PDF)">
               {isUploading ? <Loader2 size={20} className="animate-spin text-black" /> : <Paperclip size={20} />}
             </button>
             <div className="flex-1 relative">
-              <textarea value={newMessage} onChange={(e) => setNewMessage(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(e); } }} placeholder="พิมพ์ข้อความ หรือกดไอคอนซ้ายมือเพื่อแนบไฟล์..." disabled={isUploading} className="w-full bg-zinc-50 border border-zinc-200 rounded-2xl pl-4 pr-12 py-3.5 text-sm focus:outline-none focus:border-black transition resize-none max-h-[120px] disabled:opacity-50" rows={1} />
-              <button type="submit" disabled={!newMessage.trim() || isUploading} className="absolute right-2 bottom-2 p-2 bg-black text-white rounded-full hover:bg-zinc-800 transition disabled:opacity-50 shadow-md">
+              <textarea value={newMessage} onChange={(e) => setNewMessage(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(e); } }} placeholder="พิมพ์ข้อความ..." disabled={isUploading || !isChatSelected} className="w-full bg-zinc-50 border border-zinc-200 rounded-2xl pl-4 pr-12 py-3.5 text-sm focus:outline-none focus:border-black transition resize-none max-h-[100px] disabled:opacity-50" rows={1} />
+              <button type="submit" disabled={!newMessage.trim() || isUploading || !isChatSelected} className="absolute right-2 bottom-2 p-2 bg-black text-white rounded-full hover:bg-zinc-800 transition disabled:opacity-50 shadow-md">
                 <Send size={16} className="ml-0.5" />
               </button>
             </div>
@@ -427,7 +465,9 @@ export default function AdminChatRoom() {
             </div>
             <div className="flex justify-between items-center text-sm">
               <span className="text-zinc-500">ป้ายกำกับ</span>
-              <span className="px-2.5 py-1 bg-blue-50 text-blue-600 text-[10px] font-bold rounded-full border border-blue-100">{overallStatus}</span>
+              <span className="px-2.5 py-1 bg-blue-50 text-blue-600 text-[10px] font-bold rounded-full border border-blue-100">
+                {overallStatus}
+              </span>
             </div>
             <div className="pt-3 mt-1 border-t border-zinc-200/60">
               <div className="flex justify-between items-center text-[11px] mb-2 font-medium">
@@ -443,7 +483,7 @@ export default function AdminChatRoom() {
           <div>
             <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-3">เครื่องมือแอดมิน</p>
             <div className="space-y-2">
-              <button onClick={openBriefModal} className="w-full flex items-center gap-3 p-3 rounded-xl border border-blue-100 bg-blue-50 text-blue-700 hover:bg-blue-100 transition shadow-sm font-bold text-sm text-left">
+              <button onClick={openBriefModal} disabled={!isChatSelected} className="w-full flex items-center gap-3 p-3 rounded-xl border border-blue-100 bg-blue-50 text-blue-700 hover:bg-blue-100 transition shadow-sm font-bold text-sm text-left disabled:opacity-50">
                 <AlignLeft size={18} /> จัดการบรีฟงาน
               </button>
             </div>
@@ -451,7 +491,7 @@ export default function AdminChatRoom() {
 
           <div>
              <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-3">จัดการงาน (Tasks)</p>
-             <button onClick={() => { setTempTasks([...tasks]); setIsTimelineModalOpen(true); }} className="w-full flex items-center justify-between p-3 rounded-xl border border-zinc-200 bg-white hover:border-black hover:shadow-sm transition text-sm group">
+             <button onClick={() => { setTempTasks([...tasks]); setIsTimelineModalOpen(true); }} disabled={!isChatSelected} className="w-full flex items-center justify-between p-3 rounded-xl border border-zinc-200 bg-white hover:border-black hover:shadow-sm transition text-sm group disabled:opacity-50">
                <div className="flex items-center gap-2 font-bold text-zinc-700 group-hover:text-black transition"><Milestone size={16} className="text-blue-500" /> อัปเดต Task งาน</div>
                <ChevronRight size={16} className="text-zinc-400 group-hover:text-black transition" />
              </button>
@@ -459,7 +499,7 @@ export default function AdminChatRoom() {
         </div>
       </aside>
 
-      {/* ================= Modal: จัดการบรีฟงาน ================= */}
+      {/* ================= Modals ================= */}
       <AnimatePresence>
         {isBriefModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -511,7 +551,6 @@ export default function AdminChatRoom() {
         )}
       </AnimatePresence>
 
-      {/* ================= Modal: อัปเดต Task งาน ================= */}
       <AnimatePresence>
         {isTimelineModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

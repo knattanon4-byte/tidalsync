@@ -13,9 +13,14 @@ export default function AdminProjects() {
   
   // ================= States สำหรับข้อมูล Database =================
   const [projects, setProjects] = useState<any[]>([]);
+  const [filteredProjects, setFilteredProjects] = useState<any[]>([]); // 🌟 State เก็บข้อมูลที่กรองแล้ว
   const [clientList, setClientList] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
+
+  // ================= States สำหรับระบบค้นหาและกรอง =================
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterType, setFilterType] = useState("All");
 
   // ================= State ฟอร์มสร้างโปรเจกต์ =================
   const [newProject, setNewProject] = useState({
@@ -25,7 +30,7 @@ export default function AdminProjects() {
     budget: "",
     due_date: "",
     description: "",
-    status: "pending",
+    status: "รอประเมินราคา",
     progress: 0
   });
 
@@ -42,17 +47,16 @@ export default function AdminProjects() {
   const fetchProjects = async () => {
     setIsLoading(true);
     try {
-      // 🌟 แก้ไข: ดึงข้อมูลจากตาราง inquiries (ตารางหลักที่เก็บคำขอโปรเจกต์)
       const { data, error } = await supabase
         .from('inquiries')
-        .select(`
-          *,
-          profiles:user_id (full_name, company_name)
-        `)
+        .select(`*, profiles:user_id (full_name, company_name)`)
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      if (data) setProjects(data);
+      if (data) {
+        setProjects(data);
+        setFilteredProjects(data); // 🌟 เริ่มต้นให้แสดงโปรเจกต์ทั้งหมด
+      }
     } catch (error) {
       console.error("Error fetching projects:", error);
     } finally {
@@ -65,26 +69,59 @@ export default function AdminProjects() {
     fetchProjects();
   }, []);
 
-  // Helper สำหรับแปลงชื่อลูกค้า
+  // ================= 🌟 ระบบค้นหาและตัวกรอง (Search & Filter Logic) =================
+  useEffect(() => {
+    let result = projects;
+
+    // 1. กรองด้วย Search Query (ช่องพิมพ์ค้นหา)
+    if (searchQuery.trim() !== "") {
+      const query = searchQuery.toLowerCase();
+      result = result.filter((p) => {
+        const projectName = p.project_name?.toLowerCase() || "";
+        const clientFullName = p.profiles?.full_name?.toLowerCase() || "";
+        const clientCompany = p.profiles?.company_name?.toLowerCase() || "";
+        
+        return projectName.includes(query) || clientFullName.includes(query) || clientCompany.includes(query);
+      });
+    }
+
+    // 2. กรองด้วยประเภทงาน (Dropdown Filter)
+    if (filterType !== "All") {
+      result = result.filter((p) => {
+        const pType = p.project_type || "ไม่ระบุ"; 
+        return pType === filterType;
+      });
+    }
+
+    setFilteredProjects(result); // 🌟 อัปเดตข้อมูลที่จะแสดงบนหน้าจอ
+  }, [searchQuery, filterType, projects]);
+
   const getClientName = (proj: any) => {
     if (!proj.profiles) return "คุณลูกค้า";
     return proj.profiles.company_name ? `${proj.profiles.company_name} (คุณ${proj.profiles.full_name})` : `คุณ${proj.profiles.full_name}`;
   };
 
-  // ================= ฟังก์ชันสร้างโปรเจกต์ =================
+  const getStatusGroup = (status: string) => {
+    const s = String(status || '').trim().toLowerCase();
+    if (s.includes('รอประเมิน') || s === 'pending' || s === 'new' || s === '') return 'pending';
+    if (s.includes('รอมัดจำ') || s.includes('กำลังพัฒนา') || s === 'inprogress') return 'inProgress';
+    if (s.includes('uat') || s.includes('แก้ไข')) return 'uat';
+    if (s.includes('ส่งมอบ') || s === 'completed' || s.includes('เสร็จ')) return 'completed';
+    return 'pending'; // Default
+  };
+
   const handleCreateProject = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsCreating(true);
     try {
-      // 🌟 แก้ไข: บันทึกข้อมูลลงตาราง inquiries และจับคู่คอลัมน์ให้ถูกต้อง
       const { error } = await supabase
         .from('inquiries')
         .insert([{
           project_name: newProject.title,
-          user_id: newProject.client_id, // ใช้ user_id ตามตาราง inquiries
+          user_id: newProject.client_id, 
           project_type: newProject.type,
           budget: newProject.budget ? Number(newProject.budget) : 0,
-          brief: newProject.description, // ใช้ brief ตามหน้าแชท
+          brief: newProject.description, 
           status: newProject.status,
           progress: newProject.progress,
           due_date: newProject.due_date
@@ -93,8 +130,8 @@ export default function AdminProjects() {
       if (error) throw error;
       
       setIsAddModalOpen(false);
-      setNewProject({ title: "", client_id: "", type: "Web Application", budget: "", due_date: "", description: "", status: "pending", progress: 0 });
-      fetchProjects(); // โหลดข้อมูลใหม่ให้ขึ้นบนบอร์ดทันที
+      setNewProject({ title: "", client_id: "", type: "Web Application", budget: "", due_date: "", description: "", status: "รอประเมินราคา", progress: 0 });
+      fetchProjects(); 
 
     } catch (error: any) {
       alert("สร้างโปรเจกต์ไม่สำเร็จ: " + error.message);
@@ -113,16 +150,38 @@ export default function AdminProjects() {
           <p className="text-sm text-zinc-500 mt-1">จัดการและติดตามสถานะงานทั้งหมด</p>
         </div>
         <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-          <div className="relative flex-1 md:w-64">
+          
+          {/* 🌟 ช่องค้นหา (ผูกกับ State searchQuery) */}
+          <div className="relative flex-1 md:w-64 min-w-[140px]">
             <Search className="absolute left-3.5 top-2.5 text-zinc-400" size={16} />
-            <input type="text" placeholder="ค้นหาโปรเจค..." className="w-full pl-10 pr-4 py-2 bg-white border border-zinc-200 rounded-full text-sm font-medium focus:outline-none focus:border-black transition shadow-sm" />
+            <input 
+              type="text" 
+              placeholder="ค้นหาโปรเจค..." 
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 bg-white border border-zinc-200 rounded-full text-base md:text-sm font-medium focus:outline-none focus:border-black transition shadow-sm" 
+            />
           </div>
-          <button className="flex items-center gap-2 p-2 px-4 bg-white border border-zinc-200 rounded-full text-zinc-700 hover:text-black hover:bg-zinc-50 transition shadow-sm text-sm font-medium">
-            <Filter size={14} /> ตัวกรอง
-          </button>
+
+          {/* 🌟 ตัวกรอง (ยังคง UI เดิม แต่เปลี่ยนเป็น <select> แบบเนียนๆ และขยายขนาด text บนมือถือ) */}
+          <div className="relative">
+             <select 
+              value={filterType}
+              onChange={(e) => setFilterType(e.target.value)}
+              className="appearance-none flex items-center gap-2 p-2 pl-9 pr-6 md:pr-4 bg-white border border-zinc-200 rounded-full text-zinc-700 hover:text-black hover:bg-zinc-50 transition shadow-sm text-base md:text-sm font-medium cursor-pointer focus:outline-none focus:border-black"
+             >
+               <option value="All">ทุกประเภทงาน</option>
+               <option value="Web Application">Web Application</option>
+               <option value="Web Design">Web Design</option>
+               <option value="Mobile App">Mobile App</option>
+               <option value="Branding">Branding / Logo</option>
+             </select>
+             <Filter size={14} className="absolute left-3.5 top-3 md:top-2.5 text-zinc-600 pointer-events-none" />
+          </div>
+
           <button 
             onClick={() => setIsAddModalOpen(true)}
-            className="flex items-center gap-2 p-2 px-4 bg-black text-white rounded-full hover:bg-zinc-800 transition shadow-md text-sm font-medium"
+            className="flex items-center gap-2 p-2 px-4 bg-black text-white rounded-full hover:bg-zinc-800 transition shadow-md text-sm font-medium ml-auto md:ml-0"
           >
             <Plus size={16} /> สร้างโปรเจค
           </button>
@@ -135,17 +194,18 @@ export default function AdminProjects() {
           <div className="w-full flex justify-center items-center"><Loader2 className="animate-spin text-zinc-400" size={32}/></div>
         ) : (
           <>
-            <KanbanColumn title="รอประเมิน (New)" count={projects.filter(p => !p.status || p.status === "pending").length} color="border-zinc-300 bg-zinc-50/50">
-              {projects.filter(p => !p.status || p.status === "pending").map(p => <ProjectCard key={p.id} project={p} getClientName={getClientName} />)}
+            {/* 🌟 เปลี่ยนมาใช้ข้อมูลจาก filteredProjects แทน projects 🌟 */}
+            <KanbanColumn title="รอประเมิน (New)" count={filteredProjects.filter(p => getStatusGroup(p.status) === 'pending').length} color="border-zinc-300 bg-zinc-50/50">
+              {filteredProjects.filter(p => getStatusGroup(p.status) === 'pending').map(p => <ProjectCard key={p.id} project={p} getClientName={getClientName} />)}
             </KanbanColumn>
-            <KanbanColumn title="กำลังพัฒนา (In Progress)" count={projects.filter(p => p.status === "inProgress").length} color="border-black">
-              {projects.filter(p => p.status === "inProgress").map(p => <ProjectCard key={p.id} project={p} getClientName={getClientName} />)}
+            <KanbanColumn title="กำลังทำ (In Progress)" count={filteredProjects.filter(p => getStatusGroup(p.status) === 'inProgress').length} color="border-black">
+              {filteredProjects.filter(p => getStatusGroup(p.status) === 'inProgress').map(p => <ProjectCard key={p.id} project={p} getClientName={getClientName} />)}
             </KanbanColumn>
-            <KanbanColumn title="รอตรวจ / แก้ไข (UAT)" count={projects.filter(p => p.status === "uat").length} color="border-orange-400">
-              {projects.filter(p => p.status === "uat").map(p => <ProjectCard key={p.id} project={p} getClientName={getClientName} />)}
+            <KanbanColumn title="รอตรวจ / แก้ไข (UAT)" count={filteredProjects.filter(p => getStatusGroup(p.status) === 'uat').length} color="border-orange-400">
+              {filteredProjects.filter(p => getStatusGroup(p.status) === 'uat').map(p => <ProjectCard key={p.id} project={p} getClientName={getClientName} />)}
             </KanbanColumn>
-            <KanbanColumn title="เสร็จสิ้น (Completed)" count={projects.filter(p => p.status === "completed").length} color="border-green-500">
-              {projects.filter(p => p.status === "completed").map(p => <ProjectCard key={p.id} project={p} getClientName={getClientName} />)}
+            <KanbanColumn title="เสร็จสิ้น (Completed)" count={filteredProjects.filter(p => getStatusGroup(p.status) === 'completed').length} color="border-green-500">
+              {filteredProjects.filter(p => getStatusGroup(p.status) === 'completed').map(p => <ProjectCard key={p.id} project={p} getClientName={getClientName} />)}
             </KanbanColumn>
           </>
         )}
@@ -234,9 +294,10 @@ export default function AdminProjects() {
   );
 }
 
+// 🌟 ปรับขนาดความกว้าง Column ให้ยืดหยุ่นขึ้น ไม่ให้ล้นจอใน PC
 function KanbanColumn({ title, count, color, children }: { title: string, count: number, color: string, children: React.ReactNode }) {
   return (
-    <div className="flex flex-col min-w-[300px] w-[300px] md:min-w-[340px] md:w-[340px] bg-zinc-100/50 rounded-2xl shrink-0 snap-start h-full overflow-hidden">
+    <div className="flex flex-col min-w-[280px] w-[280px] md:min-w-0 md:w-full md:flex-1 bg-zinc-100/50 rounded-2xl shrink-0 snap-start h-full overflow-hidden">
       <div className={`p-4 border-t-4 ${color} bg-white flex justify-between items-center shrink-0 border-b border-zinc-100`}>
         <h3 className="font-bold text-zinc-800 text-sm flex items-center gap-2">
           {title} <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${count > 0 && title.includes('New') ? 'bg-red-500 text-white animate-pulse' : 'bg-zinc-100 text-zinc-500'}`}>{count}</span>
@@ -253,7 +314,6 @@ function KanbanColumn({ title, count, color, children }: { title: string, count:
 function ProjectCard({ project, getClientName }: { project: any, getClientName: Function }) {
   const router = useRouter();
   
-  // แปลง tag ตามประเภทงาน
   const getTagColor = (type: string) => {
     if(type?.includes('Design')) return 'bg-purple-100 text-purple-700';
     if(type?.includes('Mobile')) return 'bg-blue-100 text-blue-700';
@@ -261,14 +321,19 @@ function ProjectCard({ project, getClientName }: { project: any, getClientName: 
     return 'bg-zinc-100 text-zinc-700';
   };
 
+  const getStatusGroup = (status: string) => {
+    const s = String(status || '').trim().toLowerCase();
+    if (s.includes('รอประเมิน') || s === 'pending' || s === 'new' || s === '') return 'pending';
+    return 'other';
+  };
+
   return (
     <motion.div 
-      // 🌟 แก้ไข: ให้กดแล้วเด้งไปที่ /admin/chat/รหัสโปรเจกต์ (project.id) แทนที่จะเป็น client_id
       onClick={() => router.push(`/admin/chat/${project.id}`)}
       whileHover={{ y: -2 }}
-      className={`relative bg-white p-4 rounded-xl border shadow-sm hover:shadow-md transition cursor-pointer group flex flex-col gap-3 ${!project.status || project.status === 'pending' ? 'border-zinc-300' : 'border-zinc-200 hover:border-black'}`}
+      className={`relative bg-white p-4 rounded-xl border shadow-sm hover:shadow-md transition cursor-pointer group flex flex-col gap-3 ${getStatusGroup(project.status) === 'pending' ? 'border-zinc-300' : 'border-zinc-200 hover:border-black'}`}
     >
-      {(!project.status || project.status === 'pending') && (
+      {getStatusGroup(project.status) === 'pending' && (
         <span className="absolute -top-2 -right-2 bg-red-500 text-white text-[9px] font-bold px-2.5 py-1 rounded-full shadow-md animate-bounce">
           NEW REQUEST
         </span>
@@ -276,7 +341,6 @@ function ProjectCard({ project, getClientName }: { project: any, getClientName: 
 
       <div className="flex justify-between items-start">
         <div className="flex flex-wrap gap-1 mb-1">
-            {/* 🌟 แก้ไข: แมปปิ้งตัวแปร project.project_type */}
             <span className={`px-2 py-0.5 text-[9px] font-bold rounded-md uppercase tracking-wider ${getTagColor(project.project_type)}`}>
               {project.project_type || 'Project'}
             </span>
@@ -284,15 +348,14 @@ function ProjectCard({ project, getClientName }: { project: any, getClientName: 
       </div>
 
       <div>
-        {/* 🌟 แก้ไข: แมปปิ้งตัวแปร project.project_name */}
         <h4 className="font-bold text-zinc-900 leading-tight group-hover:text-blue-600 transition pr-4">{project.project_name}</h4>
         <p className="text-[11px] text-zinc-500 mt-1 flex items-center gap-1.5"><Users size={12}/> {getClientName(project)}</p>
       </div>
 
       <div className="pt-2 border-t border-zinc-100">
         <div className="flex justify-between items-center text-[10px] mb-1.5 font-medium">
-          <span className={`flex items-center gap-1 ${!project.status || project.status === 'pending' ? 'text-orange-500 font-bold' : 'text-zinc-500'}`}>
-            {!project.status || project.status === 'pending' ? <Calendar size={12}/> : <Clock size={12}/>} 
+          <span className={`flex items-center gap-1 ${getStatusGroup(project.status) === 'pending' ? 'text-orange-500 font-bold' : 'text-zinc-500'}`}>
+            {getStatusGroup(project.status) === 'pending' ? <Calendar size={12}/> : <Clock size={12}/>} 
             {project.due_date || 'รอประเมิน'}
           </span>
           <span className="text-black font-bold">{project.progress || 0}%</span>

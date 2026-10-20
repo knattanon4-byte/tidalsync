@@ -10,12 +10,12 @@ import {
   Loader2, MessageSquare, FileText, ChevronDown, AlertCircle 
 } from "lucide-react";
 import { supabase } from "@/lib/supabase"; 
+import { isBefore, endOfDay } from "date-fns"; 
 
 export default function NewProjectPage() {
   const params = useParams();
   const lang = params.lang === "en" ? "en" : "th";
 
-  // State สำหรับส่งข้อมูลโปรเจค
   const [projectName, setProjectName] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [budget, setBudget] = useState("");
@@ -23,8 +23,7 @@ export default function NewProjectPage() {
   const [brief, setBrief] = useState("");
   const [referenceUrl, setReferenceUrl] = useState("");
   
-  // State ข้อมูลสำหรับออกเอกสาร & เก็บข้อมูลผู้ใช้
-  const [fullName, setFullName] = useState(""); // 🌟 เพิ่ม State สำหรับเก็บ full_name
+  const [fullName, setFullName] = useState(""); 
   const [billingAddress, setBillingAddress] = useState("");
   const [taxId, setTaxId] = useState("");
   const [userId, setUserId] = useState<string | null>(null);
@@ -36,10 +35,8 @@ export default function NewProjectPage() {
   const [isBudgetFlexible, setIsBudgetFlexible] = useState(false); 
   const [bookingDate, setBookingDate] = useState(""); 
 
-  // State สำหรับเก็บข้อความ Error แบบสวยงาม
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  // State สำหรับ Custom Dropdown ระยะเวลา
   const [isTimelineOpen, setIsTimelineOpen] = useState(false);
   const timelineOptions = [
     { value: "urgent", label: "ด่วนมาก (ภายใน 2 สัปดาห์)" },
@@ -49,33 +46,49 @@ export default function NewProjectPage() {
   ];
   const selectedTimelineLabel = timelineOptions.find(t => t.value === timeline)?.label || "";
 
-  // ดึงข้อมูลจาก Profile มา Auto-fill
+  // 🌟 State สำหรับเก็บวันที่ถูกจอง/ล็อคทั้งหมดจาก Database
+  const [disabledDates, setDisabledDates] = useState<string[]>([]);
+
   useEffect(() => {
-    const fetchProfileData = async () => {
+    const fetchData = async () => {
+      // 1. ดึงข้อมูลโปรไฟล์ลูกค้ามาใส่ฟอร์ม
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
         setUserId(user.id);
-        
         const { data: profile } = await supabase
           .from('profiles')
-          .select('full_name, company_name, billing_address, tax_id') // 🌟 ดึง full_name มาด้วย
+          .select('full_name, company_name, billing_address, tax_id') 
           .eq('id', user.id)
           .single();
 
         if (profile) {
-          if (profile.full_name) setFullName(profile.full_name); // 🌟 เก็บลง State
+          if (profile.full_name) setFullName(profile.full_name); 
           if (profile.company_name) setCompanyName(profile.company_name);
           if (profile.billing_address) setBillingAddress(profile.billing_address);
           if (profile.tax_id) setTaxId(profile.tax_id);
         }
       }
+
+      // 🌟 2. ดึงข้อมูลวันที่คิวเต็มจากทั้ง 3 ตาราง
+      const { data: lockData } = await supabase.from('locked_dates').select('date');
+      const { data: appData } = await supabase.from('appointments').select('date');
+      const { data: projData } = await supabase.from('inquiries').select('booking_date').not('status', 'ilike', '%เสร็จ%');
+
+      // 🌟 นำวันที่ทั้งหมดมารวมกันและตัดเวลาออก (เอาแค่ YYYY-MM-DD)
+      const allDisabled = new Set<string>();
+      
+      if (lockData) lockData.forEach(item => item.date && allDisabled.add(item.date.split('T')[0]));
+      if (appData) appData.forEach(item => item.date && allDisabled.add(item.date.split('T')[0]));
+      if (projData) projData.forEach(item => item.booking_date && allDisabled.add(item.booking_date.split('T')[0]));
+
+      setDisabledDates(Array.from(allDisabled));
     };
-    fetchProfileData();
+
+    fetchData();
   }, []);
 
-  // ================= LOGIC ปฏิทินแบบ Custom =================
-  const lockedDates = ["2026-09-12", "2026-09-13", "2026-09-19", "2026-09-20"];
-  const [currentMonth, setCurrentMonth] = useState(new Date(2026, 8));
+  // ================= LOGIC ปฏิทิน =================
+  const [currentMonth, setCurrentMonth] = useState(new Date()); 
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
 
   const monthNames = {
@@ -90,9 +103,16 @@ export default function NewProjectPage() {
   const prevMonth = () => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1));
   const nextMonth = () => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1));
 
+  const isPastDate = (day: number) => {
+    const checkDate = endOfDay(new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day)); 
+    return isBefore(checkDate, new Date());
+  };
+
   const handleSelectDate = (day: number) => {
     const formattedDate = `${currentMonth.getFullYear()}-${String(currentMonth.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    if (!lockedDates.includes(formattedDate)) {
+    const isLocked = disabledDates.some(d => d.startsWith(formattedDate)); // 🌟 เช็กกับฐานข้อมูล
+
+    if (!isLocked && !isPastDate(day)) {
       setBookingDate(formattedDate);
       setIsCalendarOpen(false);
     }
@@ -105,17 +125,22 @@ export default function NewProjectPage() {
     }
     for (let day = 1; day <= daysInMonth; day++) {
       const formattedDate = `${currentMonth.getFullYear()}-${String(currentMonth.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      const isLocked = lockedDates.includes(formattedDate);
+      
+      const isLocked = disabledDates.some(d => d.startsWith(formattedDate)); // 🌟 เช็กกับฐานข้อมูล
+      const isPast = isPastDate(day); 
+      const isDisabled = isLocked || isPast; 
+
       const isSelected = bookingDate === formattedDate;
 
       days.push(
         <button
           key={day}
           type="button" 
-          disabled={isLocked}
+          disabled={isDisabled}
           onClick={() => handleSelectDate(day)}
           className={`h-10 w-10 rounded-full flex items-center justify-center text-sm transition-all
-            ${isLocked ? 'text-zinc-300 bg-zinc-50 cursor-not-allowed line-through' : 
+            ${isLocked ? 'text-red-300 bg-red-50 cursor-not-allowed line-through shadow-inner' : // 🌟 วันคิวเต็มจะเป็นสีแดงจางๆ ขีดฆ่า
+              isPast ? 'text-zinc-300 opacity-50 cursor-not-allowed' : 
               isSelected ? 'bg-black text-white font-bold shadow-md' : 
               'text-zinc-700 hover:bg-zinc-100 font-medium'}
           `}
@@ -127,7 +152,6 @@ export default function NewProjectPage() {
     return days;
   };
 
-  // ================= 🌟 ฟังก์ชัน Submit =================
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
@@ -137,12 +161,11 @@ export default function NewProjectPage() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("ไม่พบข้อมูลผู้ใช้งาน กรุณาล็อคอินใหม่");
 
-      // 🌟 1. สร้างหรืออัปเดตข้อมูล Profile ก่อน (ใส่ full_name ป้องกัน Not Null Error)
       const { error: profileError } = await supabase
         .from('profiles')
         .upsert({
           id: user.id, 
-          full_name: fullName, // 🌟 ส่ง full_name กลับไปด้วย
+          full_name: fullName, 
           company_name: companyName,
           billing_address: billingAddress,
           tax_id: taxId
@@ -152,7 +175,6 @@ export default function NewProjectPage() {
 
       const typeLabel = projectTypes.find(t => t.id === selectedType)?.title || "Other";
 
-      // 🌟 2. เมื่อมี Profile ในระบบแล้ว ค่อยบันทึกโปรเจกต์ลง Inquiries
       const { data: inquiryData, error: inquiryError } = await supabase
         .from('inquiries')
         .insert([
@@ -218,7 +240,6 @@ export default function NewProjectPage() {
                 <p className="text-zinc-500 mt-2">บอกเล่าไอเดียของคุณให้เราฟัง เพื่อให้ทีมงานประเมินราคาและระยะเวลาเบื้องต้น</p>
               </div>
 
-              {/* แจ้งเตือน Error แบบสวยงาม */}
               <AnimatePresence>
                 {submitError && (
                   <motion.div 
@@ -240,10 +261,9 @@ export default function NewProjectPage() {
 
               <form onSubmit={handleSubmit} className="space-y-8">
                 
-                {/* 1. ชื่อโปรเจค & ชื่อแบรนด์ */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
-                    <label className="block text-sm font-bold text-zinc-900 mb-3">1. ชื่อโปรเจคของคุณ <span className="text-red-500">*</span></label>
+                    <label className="block text-sm font-bold text-zinc-900 mb-3">ชื่อโปรเจคของคุณ <span className="text-red-500">*</span></label>
                     <input 
                       type="text" 
                       value={projectName}
@@ -270,7 +290,6 @@ export default function NewProjectPage() {
                   </div>
                 </div>
 
-                {/* 2. ประเภทโปรเจค */}
                 <div>
                   <label className="block text-sm font-bold text-zinc-900 mb-4">2. ประเภทงานที่สนใจ <span className="text-red-500">*</span></label>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -299,11 +318,9 @@ export default function NewProjectPage() {
                       </div>
                     ))}
                   </div>
-                  {/* ซ่อน input ไว้เพื่อทำ Required Validation */}
                   <input type="text" readOnly required value={selectedType || ""} className="opacity-0 absolute w-px h-px pointer-events-none -z-10" tabIndex={-1} />
                 </div>
 
-                {/* 3. งบประมาณ & ระยะเวลา */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
                     <label className="block text-sm font-bold text-zinc-900 mb-3">3. งบประมาณโดยประมาณ (บาท) <span className="text-red-500">*</span></label>
@@ -381,13 +398,11 @@ export default function NewProjectPage() {
                           </>
                         )}
                       </AnimatePresence>
-                      {/* ซ่อน input ไว้เพื่อบังคับกรอก */}
                       <input type="text" readOnly required value={timeline} className="opacity-0 absolute w-px h-px pointer-events-none -z-10" tabIndex={-1} />
                     </div>
                   </div>
                 </div>
 
-                {/* 5. รายละเอียดงาน */}
                 <div>
                   <label className="block text-sm font-bold text-zinc-900 mb-3">5. รายละเอียดโปรเจค (Brief) <span className="text-red-500">*</span></label>
                   <textarea 
@@ -400,7 +415,6 @@ export default function NewProjectPage() {
                   ></textarea>
                 </div>
 
-                {/* 6. วันนัดหมาย (บังคับกรอก) */}
                 <div className="relative">
                   <label className="block text-sm font-bold text-zinc-900 mb-3">6. วันที่สะดวกคุยรายละเอียดเบื้องต้น <span className="text-red-500">*</span></label>
                   
@@ -417,10 +431,9 @@ export default function NewProjectPage() {
                     </span>
                   </button>
                   
-                  {/* ซ่อน input เพื่อใช้ระบบ Validation แจ้งเตือนถ้าผู้ใช้ไม่ยอมเลือก */}
                   <input type="text" readOnly required value={bookingDate} className="opacity-0 absolute w-px h-px pointer-events-none -z-10" tabIndex={-1} />
 
-                  <p className="text-xs text-zinc-500 mt-2 ml-1">วันที่เป็นสีเทาคือวันหยุดหรือคิวเต็ม กรุณาเลือกวันอื่นครับ</p>
+                  <p className="text-xs text-zinc-500 mt-2 ml-1">วันที่เป็นสีเทาคือวันหยุด, วันที่ผ่านไปแล้ว, หรือ <span className="text-red-500 font-bold">วันคิวเต็ม (สีแดง)</span> กรุณาเลือกวันอื่นครับ</p>
 
                   <AnimatePresence>
                     {isCalendarOpen && (
@@ -447,9 +460,10 @@ export default function NewProjectPage() {
                           <div className="grid grid-cols-7 gap-1">
                             {renderCalendarDays()}
                           </div>
-                          <div className="flex items-center gap-4 mt-4 pt-4 border-t border-zinc-100 text-[10px] md:text-xs">
+                          <div className="flex items-center gap-3 mt-4 pt-4 border-t border-zinc-100 text-[10px] md:text-[11px]">
                             <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-black rounded-full"></div> เลือกแล้ว</div>
-                            <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-zinc-100 border border-zinc-200 rounded-full flex items-center justify-center"><span className="w-full h-px bg-zinc-300 rotate-45"></span></div> คิวเต็ม/วันหยุด</div>
+                            <div className="flex items-center gap-1.5"><div className="w-3 h-3 bg-red-100 border border-red-200 rounded-full flex items-center justify-center"><span className="w-full h-px bg-red-300 rotate-45"></span></div> คิวเต็ม/ปิดรับ</div>
+                            <div className="flex items-center gap-1.5"><span className="text-zinc-300 line-through">12</span> อดีต</div>
                           </div>
                         </motion.div>
                       </>
@@ -457,7 +471,6 @@ export default function NewProjectPage() {
                   </AnimatePresence>
                 </div>
 
-                {/* 7. ลิงก์อ้างอิง & แนบไฟล์ */}
                 <div className="bg-zinc-50/50 p-6 rounded-2xl border border-zinc-100 space-y-4">
                   <div className="flex items-center gap-2 mb-2">
                      <Sparkles size={16} className="text-zinc-400" />
@@ -480,7 +493,6 @@ export default function NewProjectPage() {
                   </button>
                 </div>
 
-                {/* 8. ข้อมูลสำหรับออกเอกสาร */}
                 <div className="bg-blue-50/50 p-6 rounded-2xl border border-blue-100 space-y-4 relative overflow-hidden">
                   <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-50 rounded-full blur-3xl -translate-y-1/2 translate-x-1/4"></div>
                   <div className="relative z-10">
